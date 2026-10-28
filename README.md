@@ -17,10 +17,10 @@ If you are viewing this page on your phone or desktop with AnymeX / Mangayomi in
 
 | Action | One-Click Button |
 | :--- | :--- |
-| **Add All Repositories** (Anime, Manga, Novels) | [![Add All Repositories](https://img.shields.io/badge/📥%20Add%20All%20Repositories-3b82f6?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/PratyushRai/Anima_Extensions&manga_url=https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/index.json&anime_url=https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/anime_index.json&novel_url=https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/novel_index.json) |
-| **Add Anime Only** | [![Add Anime](https://img.shields.io/badge/📺%20Add%20Anime%20Repo-10b981?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/PratyushRai/Anima_Extensions&anime_url=https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/anime_index.json) |
-| **Add Manga Only** | [![Add Manga](https://img.shields.io/badge/📖%20Add%20Manga%20Repo-f59e0b?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/PratyushRai/Anima_Extensions&manga_url=https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/index.json) |
-| **Add Novels Only** | [![Add Novels](https://img.shields.io/badge/📚%20Add%20Novel%20Repo-8b5cf6?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/PratyushRai/Anima_Extensions&novel_url=https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/novel_index.json) |
+| **Add All Repositories** (Anime, Manga, Novels) | [![Add All Repositories](https://img.shields.io/badge/📥%20Add%20All%20Repositories-3b82f6?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/CenturionEaz/Anima_Extensions&manga_url=https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/index.json&anime_url=https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/anime_index.json&novel_url=https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/novel_index.json) |
+| **Add Anime Only** | [![Add Anime](https://img.shields.io/badge/📺%20Add%20Anime%20Repo-10b981?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/CenturionEaz/Anima_Extensions&anime_url=https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/anime_index.json) |
+| **Add Manga Only** | [![Add Manga](https://img.shields.io/badge/📖%20Add%20Manga%20Repo-f59e0b?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/CenturionEaz/Anima_Extensions&manga_url=https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/index.json) |
+| **Add Novels Only** | [![Add Novels](https://img.shields.io/badge/📚%20Add%20Novel%20Repo-8b5cf6?style=for-the-badge)](https://intradeus.github.io/http-protocol-redirector?r=mangayomi://add-repo?repo_name=Anima_Extensions&repo_url=https://github.com/CenturionEaz/Anima_Extensions&novel_url=https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/novel_index.json) |
 
 ---
 
@@ -33,13 +33,13 @@ To add manually inside **AnymeX**:
 
 ```text
 # Anime Repository Index
-https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/anime_index.json
+https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/anime_index.json
 
 # Manga Repository Index
-https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/index.json
+https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/index.json
 
 # Light Novel Repository Index
-https://raw.githubusercontent.com/PratyushRai/Anima_Extensions/main/novel_index.json
+https://raw.githubusercontent.com/CenturionEaz/Anima_Extensions/main/novel_index.json
 ```
 
 ---
