@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": true,
     "sourceCodeUrl": "",
     "apiUrl": "",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,
@@ -121,14 +121,32 @@ class DefaultExtension extends MProvider {
       genre.push(genreEls[i].text.trim());
     }
 
-    const chapters = [];
-    const chEls = doc.select("li.wp-manga-chapter a, .chapter-link a, .eplister a");
+    let chapters = [];
+    let chEls = doc.select("li.wp-manga-chapter a, .chapter-link a, .eplister a, .listing-chapters_wrap a");
+
+    // If static HTML had no chapters, try Madara AJAX chapters endpoint
+    if (chEls.length === 0) {
+      try {
+        const cleanUrl = url.replace(/\/+$/, "");
+        const ajaxRes = await this.client.get(`${cleanUrl}/ajax/chapters/`, this.headers);
+        if (ajaxRes && ajaxRes.body) {
+          const ajaxDoc = new Document(ajaxRes.body);
+          chEls = ajaxDoc.select("li.wp-manga-chapter a, .chapter-link a, a");
+        }
+      } catch (_) {}
+    }
+
+    const seenUrls = {};
     for (let i = 0; i < chEls.length; i++) {
       const a = chEls[i];
       let chUrl = a.attr("href") || "";
+      if (!chUrl || chUrl === "#" || chUrl.includes("javascript:")) continue;
       if (!chUrl.startsWith("http")) {
         chUrl = `https://onisaga.com${chUrl.startsWith("/") ? "" : "/"}${chUrl}`;
       }
+
+      if (seenUrls[chUrl]) continue;
+      seenUrls[chUrl] = true;
 
       chapters.push({
         name: a.text.trim() || `Chapter ${i + 1}`,
@@ -150,17 +168,21 @@ class DefaultExtension extends MProvider {
   async getPageList(url) {
     const res = await this.client.get(url, this.headers);
     const doc = new Document(res.body || "");
-    const imgs = doc.select(".reading-content img, .page-break img");
+    const imgs = doc.select(".reading-content img, .page-break img, .wp-manga-chapter-img, .entry-content img");
     const pages = [];
+    const seen = {};
 
     for (let i = 0; i < imgs.length; i++) {
-      let src = imgs[i].attr("data-src") || imgs[i].attr("data-lazy-src") || imgs[i].attr("src") || "";
+      let src = imgs[i].attr("data-src") || imgs[i].attr("data-lazy-src") || imgs[i].attr("data-full-url") || imgs[i].attr("src") || "";
       src = src.trim();
-      if (src && !src.includes("logo") && !src.includes("banner")) {
+      if (src && !src.includes("logo") && !src.includes("banner") && !src.includes("icon")) {
         if (!src.startsWith("http")) {
           src = `https://onisaga.com${src.startsWith("/") ? "" : "/"}${src}`;
         }
-        pages.push(src);
+        if (!seen[src]) {
+          seen[src] = true;
+          pages.push(src);
+        }
       }
     }
 

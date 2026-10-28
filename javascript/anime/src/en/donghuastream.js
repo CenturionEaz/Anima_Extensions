@@ -17,13 +17,14 @@ const mangayomiSources = [
     "hasCloudflare": false,
     "sourceCodeUrl": "",
     "apiUrl": "",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
     "appMinVerReq": "0.1.0",
     "additionalParams": "",
-    "sourceCodeLanguage": 1
+    "sourceCodeLanguage": 1,
+    "notes": "Direct HLS Stream Extractor for Dailymotion, Ok.ru, and StreamWish"
   }
 ];
 
@@ -40,37 +41,191 @@ class DefaultExtension extends MProvider {
     };
   }
 
+  baseN(val, radix) {
+    const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    if (val === 0) return "0";
+    let res = "";
+    while (val > 0) {
+      res = chars[val % radix] + res;
+      val = Math.floor(val / radix);
+    }
+    return res;
+  }
+
+  unpackJs(packed) {
+    const m = packed.match(/}\s*\(\s*(['"][\s\S]*?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]*?['"])\.split\('\|'\)/);
+    if (!m) return packed;
+    let p = m[1].slice(1, -1);
+    const a = parseInt(m[2], 10);
+    let c = parseInt(m[3], 10);
+    const k = m[4].slice(1, -1).split("|");
+    while (c--) {
+      if (k[c]) {
+        const key = this.baseN(c, a);
+        const reg = new RegExp("\\b" + key + "\\b", "g");
+        p = p.replace(reg, k[c]);
+      }
+    }
+    return p;
+  }
+
   decodeBase64(str) {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     let output = "";
     str = String(str).replace(/=+$/, "");
-    for (let bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
-      buffer = chars.indexOf(buffer);
+    for (let bc = 0, bs, buffer, idx = 0; (buffer = str.charAt(idx++)); ) {
+      const charIndex = chars.indexOf(buffer);
+      if (~charIndex) {
+        bs = bc % 4 ? bs * 64 + charIndex : charIndex;
+        if (bc++ % 4) {
+          output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
+        }
+      }
     }
     return output;
   }
 
-  parseAnimeList(html) {
+  async resolveEmbed(embedUrl, label) {
+    const results = [];
+    if (!embedUrl) return results;
+
+    try {
+      // 1. Dailymotion
+      if (embedUrl.includes("dailymotion") || embedUrl.includes("dai.ly")) {
+        const dmMatch = embedUrl.match(/video=([a-zA-Z0-9]+)/) ||
+                        embedUrl.match(/dailymotion\.com\/(?:video|embed\/video)\/([a-zA-Z0-9]+)/) ||
+                        embedUrl.match(/dai\.ly\/([a-zA-Z0-9]+)/);
+        if (dmMatch && dmMatch[1]) {
+          const dmRes = await this.client.get(`https://www.dailymotion.com/player/metadata/video/${dmMatch[1]}`, {
+            "User-Agent": this.headers["User-Agent"]
+          });
+          const meta = JSON.parse(dmRes.body);
+          if (meta && meta.qualities && meta.qualities.auto && meta.qualities.auto.length > 0) {
+            results.push({
+              url: meta.qualities.auto[0].url,
+              originalUrl: meta.qualities.auto[0].url,
+              quality: `${label} - Auto (HLS)`,
+              headers: {
+                "User-Agent": this.headers["User-Agent"],
+                "Referer": "https://www.dailymotion.com/"
+              }
+            });
+            return results;
+          }
+        }
+      }
+
+      // 2. Ok.ru
+      if (embedUrl.includes("ok.ru")) {
+        const okMatch = embedUrl.match(/ok\.ru\/(?:videoembed|video)\/(\d+)/);
+        if (okMatch && okMatch[1]) {
+          const okRes = await this.client.get(`https://ok.ru/videoembed/${okMatch[1]}`, {
+            "User-Agent": this.headers["User-Agent"]
+          });
+          const optMatch = (okRes.body || "").match(/data-module="OKVideo"[^>]*data-options="([^"]+)"/);
+          if (optMatch) {
+            const decoded = optMatch[1].replace(/&quot;/g, '"');
+            const data = JSON.parse(decoded);
+            if (data && data.flashvars && data.flashvars.metadata) {
+              let meta = data.flashvars.metadata;
+              if (typeof meta === "string") {
+                try { meta = JSON.parse(meta); } catch (_) { meta = null; }
+              }
+              if (meta) {
+                if (meta.hlsManifestUrl) {
+                  results.push({
+                    url: meta.hlsManifestUrl,
+                    originalUrl: meta.hlsManifestUrl,
+                    quality: `${label} - HLS Master`,
+                    headers: { "User-Agent": this.headers["User-Agent"] }
+                  });
+                }
+                if (Array.isArray(meta.videos)) {
+                  for (let i = 0; i < meta.videos.length; i++) {
+                    const v = meta.videos[i];
+                    results.push({
+                      url: v.url,
+                      originalUrl: v.url,
+                      quality: `${label} - ${v.name || "MP4"}`,
+                      headers: { "User-Agent": this.headers["User-Agent"] }
+                    });
+                  }
+                }
+                if (results.length > 0) return results;
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Direct playable m3u8 or mp4
+      if (embedUrl.includes(".m3u8") || embedUrl.includes(".mp4")) {
+        results.push({
+          url: embedUrl,
+          originalUrl: embedUrl,
+          quality: label,
+          headers: this.headers
+        });
+        return results;
+      }
+
+      // 4. StreamWish / Generic embed pages: fetch and inspect
+      const pageRes = await this.client.get(embedUrl, {
+        "User-Agent": this.headers["User-Agent"],
+        "Referer": this.headers["Referer"]
+      });
+      const html = pageRes.body || "";
+      const packed = html.match(/eval\(function\(p,a,c,k,e,[\s\S]*?\.split\('\|'\)\)\)/);
+      let target = html;
+      if (packed) {
+        target = this.unpackJs(packed[0]);
+      }
+      const m3u8Match = target.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+      if (m3u8Match && m3u8Match[1]) {
+        results.push({
+          url: m3u8Match[1],
+          originalUrl: m3u8Match[1],
+          quality: `${label} - Stream (HLS)`,
+          headers: {
+            "User-Agent": this.headers["User-Agent"],
+            "Referer": embedUrl
+          }
+        });
+        return results;
+      }
+    } catch (_) {}
+
+    // Fallback if no direct stream could be parsed
+    results.push({
+      url: embedUrl,
+      originalUrl: embedUrl,
+      quality: label,
+      headers: this.headers
+    });
+    return results;
+  }
+
+  parseAnime(html) {
     const doc = new Document(html);
-    const articles = doc.select("article.bs");
+    const items = doc.select("article.bs, .listupd article, .animepost");
     const list = [];
 
-    for (let i = 0; i < articles.length; i++) {
-      const art = articles[i];
-      const linkEl = art.selectFirst(".bsx a, a");
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const linkEl = item.selectFirst("a");
       if (!linkEl) continue;
-
-      let link = linkEl.attr("href") || "";
-      const name = (linkEl.attr("title") || linkEl.text || "").trim();
-      if (!name) continue;
-
-      const imgEl = art.selectFirst("img.ts-post-image, img");
+      const link = linkEl.attr("href") || "";
+      const titleEl = item.selectFirst(".tt, h2, .title");
+      const name = titleEl ? titleEl.text.trim() : (linkEl.attr("title") || "").trim();
+      const imgEl = item.selectFirst("img");
       const imageUrl = imgEl ? (imgEl.attr("src") || imgEl.attr("data-src") || "") : "";
 
-      list.push({ name, link, imageUrl });
+      if (name && link) {
+        list.push({ name, link, imageUrl });
+      }
     }
 
-    const nextEl = doc.selectFirst("a.next, .pagination .next, a[rel='next']");
+    const nextEl = doc.selectFirst(".pagination .next, a.next");
     const hasNextPage = !!(nextEl && nextEl.attr("href"));
 
     return { list, hasNextPage };
@@ -79,39 +234,39 @@ class DefaultExtension extends MProvider {
   async getPopular(page) {
     const url = `https://donghuastream.org/anime/?page=${page}&status=&type=&order=popular`;
     const res = await this.client.get(url, this.headers);
-    return this.parseAnimeList(res.body || "");
+    return this.parseAnime(res.body || "");
   }
 
   async getLatestUpdates(page) {
     const url = `https://donghuastream.org/anime/?page=${page}&status=&type=&order=update`;
     const res = await this.client.get(url, this.headers);
-    return this.parseAnimeList(res.body || "");
+    return this.parseAnime(res.body || "");
   }
 
   async search(query, page, filters) {
     const q = encodeURIComponent((query || "").trim());
-    const url = `https://donghuastream.org/?s=${q}&post_type=anime`;
+    const url = `https://donghuastream.org/?s=${q}`;
     const res = await this.client.get(url, this.headers);
-    return this.parseAnimeList(res.body || "");
+    return this.parseAnime(res.body || "");
   }
 
   async getDetail(url) {
     const res = await this.client.get(url, this.headers);
     const doc = new Document(res.body || "");
 
-    const titleEl = doc.selectFirst("h1.entry-title, .entry-title");
+    const titleEl = doc.selectFirst("h1.entry-title, .entry-title, h1");
     const name = titleEl ? titleEl.text.trim() : "";
 
-    const imgEl = doc.selectFirst(".thumb img, .bixbox img, img.ts-post-image");
+    const imgEl = doc.selectFirst(".thumb img, .thumbx img, .animeposter img");
     const imageUrl = imgEl ? (imgEl.attr("src") || imgEl.attr("data-src") || "") : "";
 
-    const descEl = doc.selectFirst(".entry-content, .synopsis, .desc");
+    const descEl = doc.selectFirst(".entry-content, .desc, .synopsis, .shortdesc");
     const description = descEl ? descEl.text.trim() : "";
 
-    const authorEl = doc.selectFirst(".infox .spe:contains('Studio') span, .infox .spe:contains('Author')");
-    const author = authorEl ? authorEl.text.trim() : "";
+    const authorEl = doc.selectFirst(".spe span:contains('Studio'), .spe span:contains('Author')");
+    const author = authorEl ? authorEl.text.replace(/Studio|Author|:/gi, "").trim() : "";
 
-    const genreEls = doc.select(".genxed a, .mgen a");
+    const genreEls = doc.select(".genxed a, .genre-info a");
     const genre = [];
     for (let i = 0; i < genreEls.length; i++) {
       genre.push(genreEls[i].text.trim());
@@ -151,6 +306,7 @@ class DefaultExtension extends MProvider {
     const res = await this.client.get(url, this.headers);
     const doc = new Document(res.body || "");
     const videos = [];
+    const seenUrls = {};
 
     // 1. Direct iframe player in page
     const iframeEl = doc.selectFirst(".player-embed iframe, iframe");
@@ -158,11 +314,13 @@ class DefaultExtension extends MProvider {
       const src = iframeEl.attr("src") || "";
       if (src && !src.includes("about:blank")) {
         const fullSrc = src.startsWith("//") ? `https:${src}` : src;
-        videos.push({
-          url: fullSrc,
-          originalUrl: fullSrc,
-          quality: "Default Player"
-        });
+        const resolved = await this.resolveEmbed(fullSrc, "Default Player");
+        for (let j = 0; j < resolved.length; j++) {
+          if (!seenUrls[resolved[j].url]) {
+            seenUrls[resolved[j].url] = true;
+            videos.push(resolved[j]);
+          }
+        }
       }
     }
 
@@ -180,11 +338,13 @@ class DefaultExtension extends MProvider {
         if (match && match[1]) {
           let embedUrl = match[1];
           if (embedUrl.startsWith("//")) embedUrl = `https:${embedUrl}`;
-          videos.push({
-            url: embedUrl,
-            originalUrl: embedUrl,
-            quality: label || `Server ${i}`
-          });
+          const resolved = await this.resolveEmbed(embedUrl, label || `Server ${i}`);
+          for (let j = 0; j < resolved.length; j++) {
+            if (!seenUrls[resolved[j].url]) {
+              seenUrls[resolved[j].url] = true;
+              videos.push(resolved[j]);
+            }
+          }
         }
       } catch (_) {}
     }

@@ -17,10 +17,9 @@ yarn-error.log*
 # OS & IDEs
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
+# Local scratch
+scratch/
+
 
 # Local scratch / test files
 scratch/
