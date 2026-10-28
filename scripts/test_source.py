@@ -26,6 +26,7 @@ if sys.platform == "win32":
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 def test_file(file_path: Path):
+    file_path = file_path.resolve()
     print(f"\n[*] Validating: {file_path.relative_to(ROOT_DIR)}")
     
     # 1. Syntax check via Node.js
