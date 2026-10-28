@@ -2,17 +2,17 @@ const mangayomiSources = [
   {
     "name": "Miruro",
     "id": 617345892,
-    "baseUrl": "https://www.miruro.to",
+    "baseUrl": "https://www.miruro.cx",
     "lang": "en",
     "typeSource": "single",
-    "iconUrl": "https://www.google.com/s2/favicons?sz=256&domain=https://www.miruro.to",
+    "iconUrl": "https://www.google.com/s2/favicons?sz=256&domain=https://www.miruro.cx",
     "dateFormat": "",
     "dateFormatLocale": "",
     "isNsfw": false,
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/Mallyd11/mangayomi-anime-extensions/refs/heads/main/javascript/anime/src/en/miruro.js",
     "apiUrl": "",
-    "version": "6.1.14",
+    "version": "6.1.15",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
@@ -59,10 +59,14 @@ class DefaultExtension extends MProvider {
     return t[lang] || t.english || t.romaji || t.native || "Unknown";
   }
 
+  get baseUrl() {
+    return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://www.miruro.cx";
+  }
+
   mediaToItem(m) {
     return {
       name: this.preferredTitle(m.title),
-      link: "https://www.miruro.to/info/" + m.id,
+      link: this.baseUrl + "/info/" + m.id,
       imageUrl: (m.coverImage && m.coverImage.large) || "",
     };
   }
@@ -166,7 +170,7 @@ class DefaultExtension extends MProvider {
     for (var i = 1; i <= epCount; i++) {
       chapters.push({
         name: "Episode " + i,
-        url: "https://www.miruro.to/watch/" + id + "/" + i,
+        url: this.baseUrl + "/watch/" + id + "/" + i,
         isFiller: false,
       });
     }
@@ -181,7 +185,7 @@ class DefaultExtension extends MProvider {
       description: m && m.description ? m.description.replace(/<[^>]+>/g, "") : "",
       genre:       m && m.genres ? m.genres : [],
       status:      status,
-      link:        "https://www.miruro.to/info/" + id,
+      link:        this.baseUrl + "/info/" + id,
       chapters:    chapters,
     };
   }
