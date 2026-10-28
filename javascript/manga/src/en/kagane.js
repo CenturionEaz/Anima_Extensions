@@ -1,17 +1,17 @@
 const mangayomiSources = [{
     "name": "kagane",
     "lang": "en",
-    "baseUrl": "https://kagane.to",
-    "apiUrl": "https://{}kagane.to/api",
-    "iconUrl": "https://www.google.com/s2/favicons?sz=256&domain=https://kagane.to",
+    "baseUrl": "https://kagane.net",
+    "apiUrl": "https://kagane.net/api",
+    "iconUrl": "https://www.google.com/s2/favicons?sz=256&domain=https://kagane.net",
     "typeSource": "single",
     "itemType": 0,
     "isManga": true,
     "isNsfw": true,
     "hasCloudflare": true,
-    "version": "0.0.2",
+    "version": "0.0.3",
     "pkgPath": "manga/src/en/kagane.js",
-    "notes": "requires cloudflare proxy"
+    "notes": "Uses kagane.net API"
 }];
 
 class ProxyClient {
@@ -24,7 +24,8 @@ class ProxyClient {
     }
 
     req(method, url, headers, body) {
-        if (!this.prefs.get("proxy-use")) {
+        const useProxy = this.prefs.get("proxy-use");
+        if (useProxy !== true && useProxy !== "true") {
             return this.client[method.toLowerCase()](
                 url,
                 headers,
@@ -32,17 +33,18 @@ class ProxyClient {
             );
         }
 
+        const proxyUrl = this.prefs.get("proxy-url") || "http://localhost:8080";
         return this.client.post(
-            this.prefs.get("proxy-url"),
+            proxyUrl,
             {
-                "x-api-key": this.prefs.get("proxy-key"),
-                "x-impersonate": this.prefs.get("proxy-impersonate")
+                "x-api-key": this.prefs.get("proxy-key") || "",
+                "x-impersonate": this.prefs.get("proxy-impersonate") || "chrome120"
             },
             JSON.stringify({
                 url,
                 method,
                 headers,
-                body: JSON.stringify(body)
+                body: typeof body === "object" ? JSON.stringify(body) : body
             })
         );
     }
@@ -181,8 +183,14 @@ class DefaultExtension extends MProvider {
         }
         return result;
     }
+    get baseUrl() {
+        return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://kagane.net";
+    }
+    get apiUrl() {
+        return (this.source && this.source.apiUrl) ? this.source.apiUrl : "https://kagane.net/api";
+    }
     async getIntegrityToken() {
-        const res = await this.client.post(`${this.source.apiUrl.replace("{}", "")}/api/integrity`, 
+        const res = await this.client.post(`${this.apiUrl}/integrity`, 
             { 'Content-Type': 'application/json' },
             {}
         );
@@ -191,9 +199,9 @@ class DefaultExtension extends MProvider {
     getMangaData(manga, full=false) {
         let imageUrl = null;
         if (manga?.cover_image_id) {
-            imageUrl = `${this.source.apiUrl.replace("{}", "yuzuki.")}/v2/image/${manga.cover_image_id}`;
-        } else if (manga?.series_covers != null&& manga?.series_covers[0]?.image_id) {
-            imageUrl = `${this.source.apiUrl.replace("{}", "yuzuki.")}/v2/image/${manga.series_covers[0].image_id}`;
+            imageUrl = `${this.apiUrl}/v2/image/${manga.cover_image_id}`;
+        } else if (manga?.series_covers != null && manga?.series_covers[0]?.image_id) {
+            imageUrl = `${this.apiUrl}/v2/image/${manga.series_covers[0].image_id}`;
         }
         if (this.prefs.get("proxy-use") && imageUrl != null) imageUrl = `${this.prefs.get("proxy-url")}/image?url=${imageUrl}`
       
@@ -202,7 +210,7 @@ class DefaultExtension extends MProvider {
             for (const chapter of manga.series_books) {
             chapters.push({
                 name: chapter?.title ?? `${chapter?.volume_no != null ? "Vol: "+chapter.volume_no : ""}Chapter: ${chapter.chapter_no}`,
-                url: `${this.source.baseUrl}/series/${manga.series_id}/reader/${chapter.book_id}`,
+                url: `${this.baseUrl}/series/${manga.series_id}/reader/${chapter.book_id}`,
                 dateUpload: String(new Date(chapter.created_at).getTime()),
                 scanlator: chapter?.groups != null && chapter?.groups[0] != null ? chapter.groups[0].title : chapter?.uploader?.username ?? "Unknown" 
             })
@@ -212,8 +220,8 @@ class DefaultExtension extends MProvider {
         return {
             name: manga.title,
             imageUrl,
-            link: `${this.source.baseUrl}/series/${manga.series_id}`,
-            description: manga?.description ?? "Unknown", //manga.description,
+            link: `${this.baseUrl}/series/${manga.series_id}`,
+            description: manga?.description ?? "Unknown",
             status: StatusMap[manga.upload_status],
             genre: manga?.genres[0]?.genre_name != null ? manga?.genres?.map((c)=>c?.genre_name) ?? [] : [],
             author: "Unknown",
@@ -223,7 +231,6 @@ class DefaultExtension extends MProvider {
     }
     
     async getPopular(page) {
-        // https://yuzuki.kagane.to/api/v2/search/series?page=0&size=30&sort=avg_views_today%2Cdesc
         return await this.searchApi(null, "avg_views_today,desc", page);
     }
     get supportsLatest() {
@@ -239,7 +246,7 @@ class DefaultExtension extends MProvider {
       params["size"]=this.total;
       params["page"]=page-1;
 
-      let res = await this.client.post(`${this.source.apiUrl.replace("{}", "yuzuki.")}/v2/search/series?${buildParams(params)}`, 
+      let res = await this.client.post(`${this.apiUrl}/v2/search/series?${buildParams(params)}`, 
             { "content-type": "application/json"}, 
             { 
                 "content_lang": [],
@@ -264,7 +271,7 @@ class DefaultExtension extends MProvider {
     }
     async getDetail(url) {
         let id = url.split("/").slice(-1)[0];
-        let res = await this.client.get(`${this.source.apiUrl.replace("{}", "yuzuki.")}/v2/series/${id}`);
+        let res = await this.client.get(`${this.apiUrl}/v2/series/${id}`);
         let data = JSON.parse(res.body);
         return this.getMangaData(data)
     }
@@ -276,18 +283,18 @@ class DefaultExtension extends MProvider {
         ]);
         
         const res = await this.client.post(
-            `${this.source.apiUrl.replace("{}", "yuzuki.")}/v2/books/${bookid}?is_datasaver=false`,
+            `${this.apiUrl}/v2/books/${bookid}?is_datasaver=false`,
             {
                 'Content-Type':      'application/json',
                 'x-integrity-token': `${integrityToken}`
             },
             { challenge }
         );
-        const data = JSON.parse(res.body); // { access_token, cache_url, pages }
+        const data = JSON.parse(res.body);
         let pages = [];
         for (const page of data.pages) {
             pages.push({
-                url: `${this.source.apiUrl.replace("{}", "akari.")}/v2/books/file/${bookid}/${page.page_uuid}?token=${data.access_token}&is_datasaver=false`
+                url: `${this.apiUrl}/v2/books/file/${bookid}/${page.page_uuid}?token=${data.access_token}&is_datasaver=false`
             })
         }
         return pages;
@@ -302,7 +309,7 @@ class DefaultExtension extends MProvider {
                 "checkBoxPreference": {
                     "title": "cloudflare proxy",
                     "summary": "Use a custom cloudflare proxy",
-                    "value": true
+                    "value": false
                 }
             },{
                 "key": "proxy-url",
@@ -335,3 +342,4 @@ class DefaultExtension extends MProvider {
         ]
     }
 }
+

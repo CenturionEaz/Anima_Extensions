@@ -16,13 +16,17 @@ class DefaultExtension extends MProvider {
         super();
         this.client = new Client();
     }
+    get baseUrl() {
+        return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://weebcentral.com";
+    }
     getHeaders(url) {
-        return { "Referer": `${this.source.baseUrl}/` };
+        return { "Referer": `${this.baseUrl}/` };
     }
 
     async request(slug) {
-        var url = `${this.source.baseUrl}${slug}`
-        var res = await this.client.get(url);
+        var cleanSlug = slug.startsWith("/") ? slug : `/${slug}`;
+        var url = `${this.baseUrl}${cleanSlug}`;
+        var res = await this.client.get(url, this.getHeaders(url));
         return new Document(res.body);
     }
 

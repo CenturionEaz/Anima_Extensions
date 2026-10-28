@@ -8,7 +8,7 @@ const mangayomiSources = [{
     "typeSource": "single",
     "itemType": 0,
     "isManga": true,
-    "version": "0.1.4",
+    "version": "0.1.5",
     "pkgPath": "manga/src/en/mangadex.js"
 }];
 
@@ -17,20 +17,34 @@ class DefaultExtension extends MProvider {
         super();
         this.client = new Client();
     }
+    get apiUrl() {
+        return (this.source && this.source.apiUrl) ? this.source.apiUrl : "https://api.mangadex.org";
+    }
+    get baseUrl() {
+        return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://mangadex.org";
+    }
+    get lang() {
+        return (this.source && this.source.lang) ? this.source.lang : "en";
+    }
     getHeaders(url) {
+        let ua = "";
+        try {
+            ua = this.getPreference("custom_user_agent");
+        } catch (_) {}
         return {
-            "user-agent": this.getPreference("custom_user_agent"),
+            "user-agent": ua || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "referer": "https://mangadex.org/"
         };
     }
     async getPopular(page) {
         const offset = 20 * (page - 1);
-        const url = `${this.source.apiUrl}/manga?limit=20&offset=${offset}&availableTranslatedLanguage[]=${this.source.lang}&includes[]=cover_art&contentRating[]=safe&contentRating[]=suggestive${this.preferenceOriginalLanguages()}&order[followedCount]=desc`;
+        const url = `${this.apiUrl}/manga?limit=20&offset=${offset}&availableTranslatedLanguage[]=${this.lang}&includes[]=cover_art&contentRating[]=safe&contentRating[]=suggestive${this.preferenceOriginalLanguages()}&order[followedCount]=desc`;
         const response = await this.client.get(url, this.getHeaders());
         return this.mangaRes(response.body);
     }
     async getLatestUpdates(page) {
         const offset = 20 * (page - 1);
-        const url = `${this.source.apiUrl}/chapter?limit=20&offset=${offset}&translatedLanguage[]=${this.source.lang}&includeFutureUpdates=0&order[publishAt]=desc&includeFuturePublishAt=0&includeEmptyPages=0`;
+        const url = `${this.apiUrl}/chapter?limit=20&offset=${offset}&translatedLanguage[]=${this.lang}&includeFutureUpdates=0&order[publishAt]=desc&includeFuturePublishAt=0&includeEmptyPages=0`;
         const response = await this.client.get(url, this.getHeaders());
         const mangaIds = Array.from(
             new Set(
@@ -41,19 +55,19 @@ class DefaultExtension extends MProvider {
             )
         );
         const mangaIdss = mangaIds.map(id => `&ids[]=${id}`).join("");
-        const newUrl = `${this.source.apiUrl}/manga?includes[]=cover_art&limit=${mangaIds.length}&contentRating[]=safe&contentRating[]=suggestive${this.preferenceOriginalLanguages()}${mangaIdss}`;
+        const newUrl = `${this.apiUrl}/manga?includes[]=cover_art&limit=${mangaIds.length}&contentRating[]=safe&contentRating[]=suggestive${this.preferenceOriginalLanguages()}${mangaIdss}`;
         const newResponse = await this.client.get(newUrl, this.getHeaders());
         return this.mangaRes(newResponse.body);
     }
     async search(query, page, filters) {
         let offset = 20 * (page - 1);
-        let url = `${this.source.apiUrl}/manga?includes[]=cover_art&offset=${offset}&limit=20&title=${query}`;
+        let url = `${this.apiUrl}/manga?includes[]=cover_art&offset=${offset}&limit=20&title=${query}`;
 
         filters.forEach(filter => {
             if (filter.type === "HasAvailableChaptersFilter") {
                 if (filter.state) {
                     url += `${this.ll(url)}hasAvailableChapters=true`;
-                    url += `${this.ll(url)}availableTranslatedLanguage[]=${this.source.lang}`;
+                    url += `${this.ll(url)}availableTranslatedLanguage[]=${this.lang}`;
                 }
             } else if (filter.type === "OriginalLanguageList") {
                 const langs = filter.state.filter(e => e.state);
@@ -107,29 +121,29 @@ class DefaultExtension extends MProvider {
         return this.mangaRes(response.body);
     }
     async getDetail(url) {
-        const detailUrl = `${this.source.apiUrl}${url}?includes[]=cover_art&includes[]=author&includes[]=artist`;
+        const mangaId = url.replace(/^.*\/([a-f0-9\-]+)$/i, "$1");
+        const detailUrl = `${this.apiUrl}/manga/${mangaId}?includes[]=cover_art&includes[]=author&includes[]=artist`;
         const response = await this.client.get(detailUrl, this.getHeaders());
         const data = JSON.parse(response.body).data;
         const manga = {};
-        const coverRel = data.relationships.find(rel => rel.type === "cover_art");
+        const coverRel = (data.relationships || []).find(rel => rel.type === "cover_art");
         if (coverRel && coverRel.attributes && coverRel.attributes.fileName) {
             manga.imageUrl = `https://uploads.mangadex.org/covers/${data.id}/${coverRel.attributes.fileName}`;
         }
-        const authors = data.relationships
+        const authors = (data.relationships || [])
             .filter(rel => rel.type === "author")
             .map(rel => rel.attributes.name);
         manga.author = authors.join(", ");
-        manga.description = data.attributes.description[this.source.lang] ?? data.attributes.description.en ?? "";
-        manga.genre = data.attributes.tags.map(tag => tag.attributes.name.en);
-        if (data.attributes.contentRating && data.attributes.contentRating !== "safe") {
+        manga.description = data.attributes?.description?.[this.lang] ?? data.attributes?.description?.en ?? "";
+        manga.genre = (data.attributes?.tags || []).map(tag => tag.attributes.name.en);
+        if (data.attributes?.contentRating && data.attributes.contentRating !== "safe") {
             manga.genre.push(data.attributes.contentRating);
         }
-        if (data.attributes.publicationDemographic && data.attributes.publicationDemographic !== "null") {
+        if (data.attributes?.publicationDemographic && data.attributes.publicationDemographic !== "null") {
             manga.genre.push(data.attributes.publicationDemographic);
         }
-        manga.status = { "ongoing": 0, "completed": 1, "hiatus": 2, "cancelled": 3 }[data.attributes.status];
-        const mangaId = url.split("/").pop();
-        const chapterData = await this.fetchPaginatedChapters(mangaId, this.source.lang);
+        manga.status = { "ongoing": 0, "completed": 1, "hiatus": 2, "cancelled": 3 }[data.attributes?.status] ?? 5;
+        const chapterData = await this.fetchPaginatedChapters(mangaId, this.lang);
 
         manga.chapters = chapterData;
         return manga;
@@ -140,7 +154,7 @@ class DefaultExtension extends MProvider {
         let hasMoreResults = true;
 
         while (hasMoreResults) {
-            const url = `${this.source.apiUrl}/manga/${mangaId}/feed?limit=500&offset=${offset}&includes[]=user&includes[]=scanlation_group&order[volume]=desc&order[chapter]=desc&translatedLanguage[]=${lang}&includeFuturePublishAt=0&includeEmptyPages=0&contentRating[]=safe&contentRating[]=suggestive`;
+            const url = `${this.apiUrl}/manga/${mangaId}/feed?limit=500&offset=${offset}&includes[]=user&includes[]=scanlation_group&order[volume]=desc&order[chapter]=desc&translatedLanguage[]=${lang}&includeFuturePublishAt=0&includeEmptyPages=0&contentRating[]=safe&contentRating[]=suggestive`;
             const res = await this.client.get(url, this.getHeaders());
             const paginatedData = JSON.parse(res.body);
             const limit = paginatedData?.limit ?? 0;
@@ -148,7 +162,7 @@ class DefaultExtension extends MProvider {
             const newChapters = this.extractChapters(paginatedData);
             chapters.push(...newChapters);
             offset += limit;
-            hasMoreResults = offset < total;
+            hasMoreResults = offset < total && limit > 0;
         }
 
         return chapters;
@@ -163,7 +177,7 @@ class DefaultExtension extends MProvider {
             const groups = res?.relationships?.filter(
                 rel => rel.id !== "00e03853-1b96-4f41-9542-c71b8692033b"
             );
-            for (const group of groups) {
+            for (const group of (groups || [])) {
                 const groupData = group?.attributes ?? {};
                 const name = groupData?.name ?? "";
                 if (name) {
@@ -199,7 +213,8 @@ class DefaultExtension extends MProvider {
         return chaptersList;
     }
     async getPageList(url) {
-        const pageUrl = `${this.source.apiUrl}/at-home/server/${url}`;
+        const chapterId = url.replace(/^.*\/([a-f0-9\-]+)$/i, "$1");
+        const pageUrl = `${this.apiUrl}/at-home/server/${chapterId}`;
         const response = await this.client.get(pageUrl, this.getHeaders());
         const bodyJson = JSON.parse(response.body);
         const host = bodyJson.baseUrl;
@@ -213,9 +228,9 @@ class DefaultExtension extends MProvider {
         const data = JSON.parse(res).data;
         return {
             list: data.map(e => ({
-                name: this.findTitle(e, this.source.lang),
+                name: this.findTitle(e, this.lang),
                 imageUrl: this.getCover(e),
-                link: `/manga/${e.id}`,
+                link: `${this.baseUrl}/title/${e.id}`,
             })),
             hasNextPage: true
         };
@@ -236,9 +251,13 @@ class DefaultExtension extends MProvider {
         return coverArt ? `https://uploads.mangadex.org/covers/${data.id}/${coverArt.attributes.fileName}` : "";
     }
     preferenceOriginalLanguages() {
-        const originalLanguages = this.getPreference("original_languages", []);
-        return originalLanguages.length ? `&${originalLanguages.join("&")}` : "";
+        let originalLanguages = [];
+        try {
+            originalLanguages = this.getPreference("original_languages", []);
+        } catch (_) {}
+        return (Array.isArray(originalLanguages) && originalLanguages.length) ? `&${originalLanguages.join("&")}` : "";
     }
+
     getPreference(key, defaulValue) {
         const preferences = new SharedPreferences();
         return preferences.get(key, defaulValue);

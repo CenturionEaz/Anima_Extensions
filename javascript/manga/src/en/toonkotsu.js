@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": true,
     "sourceCodeUrl": "",
     "apiUrl": "",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,
@@ -158,21 +158,46 @@ class DefaultExtension extends MProvider {
   }
 
   async getPageList(url) {
-    const res = await this.client.get(url, this.headers);
-    const doc = new Document(res.body || "");
-    const imgs = doc.select(".reader-images img, #reader img, img.ui-page");
-    const pages = [];
+    let chapterId = "";
+    const m = url.match(/\/(\d+)(?:-chapter-[^\/]*)?$/) || url.match(/\/(\d+)/);
+    if (m) chapterId = m[1];
 
-    for (let i = 0; i < imgs.length; i++) {
-      let src = imgs[i].attr("src") || imgs[i].attr("data-src") || "";
-      if (src && !src.includes("cover") && !src.includes("logo")) {
-        if (!src.startsWith("http")) {
-          src = `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
+    if (chapterId) {
+      try {
+        const apiUrl = `https://toonkotsu.com/api/manga/chapter/${chapterId}`;
+        const res = await this.client.get(apiUrl, this.headers);
+        if (res && res.body) {
+          const data = JSON.parse(res.body);
+          const chPages = (data.chapter && data.chapter.pages) || data.pages || [];
+          if (chPages.length > 0) {
+            return chPages.map(p => {
+              const src = typeof p === "string" ? p : (p.src || p.url || "");
+              if (src.startsWith("http")) return src;
+              return `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
+            });
+          }
         }
-        pages.push(src);
-      }
+      } catch (_) {}
     }
 
-    return pages;
+    try {
+      const res = await this.client.get(url, this.headers);
+      const doc = new Document(res.body || "");
+      const imgs = doc.select(".reader-images img, #reader img, img.ui-page, .reader-page-clip img, .reader-page img, article img");
+      const pages = [];
+
+      for (let i = 0; i < imgs.length; i++) {
+        let src = imgs[i].attr("src") || imgs[i].attr("data-src") || "";
+        if (src && !src.includes("cover") && !src.includes("logo") && !src.includes("avatar")) {
+          if (!src.startsWith("http")) {
+            src = `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
+          }
+          pages.push(src);
+        }
+      }
+      if (pages.length > 0) return pages;
+    } catch (_) {}
+
+    return [];
   }
 }

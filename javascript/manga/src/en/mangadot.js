@@ -9,7 +9,7 @@ const mangayomiSources = [{
     "isManga": true,
     "isNsfw": true,
     "hasCloudflare": true,
-    "version": "0.0.8",
+    "version": "0.0.9",
     "pkgPath": "manga/src/en/mangadot.js",
     "notes": ""
 }];
@@ -32,7 +32,8 @@ class ProxyClient {
     }
 
     req(method, url, headers, body) {
-        if (!this.prefs.get("proxy-use")) {
+        const useProxy = this.prefs.get("proxy-use");
+        if (useProxy !== true && useProxy !== "true") {
             return this.client[method.toLowerCase()](
                 url,
                 headers,
@@ -40,17 +41,18 @@ class ProxyClient {
             );
         }
 
+        const proxyUrl = this.prefs.get("proxy-url") || "http://localhost:8080";
         return this.client.post(
-            this.prefs.get("proxy-url"),
+            proxyUrl,
             {
-                "x-api-key": this.prefs.get("proxy-key"),
-                "x-impersonate": this.prefs.get("proxy-impersonate")
+                "x-api-key": this.prefs.get("proxy-key") || "",
+                "x-impersonate": this.prefs.get("proxy-impersonate") || "chrome120"
             },
             JSON.stringify({
                 url,
                 method,
                 headers,
-                body
+                body: typeof body === "object" ? JSON.stringify(body) : body
             })
         );
     }
@@ -139,11 +141,17 @@ class DefaultExtension extends MProvider {
       this.client = new ProxyClient(this.prefs);
       this.total = 100;
     }
+    get baseUrl() {
+        return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://mangadot.net";
+    }
+    get apiUrl() {
+        return (this.source && this.source.apiUrl) ? this.source.apiUrl : "https://mangadot.net/api";
+    }
     mangaData(manga) {
         return {
             name: fixMojibake(manga.title),
-            imageUrl: this.prefs.get("proxy-use") ? `${this.prefs.get("proxy-url")}/image?url=${this.source.baseUrl+manga.photo}` : this.source.baseUrl+manga.photo,
-            link: `${this.source.baseUrl}/manga/${manga.id}`,
+            imageUrl: this.prefs.get("proxy-use") ? `${this.prefs.get("proxy-url")}/image?url=${this.baseUrl+manga.photo}` : this.baseUrl+manga.photo,
+            link: `${this.baseUrl}/manga/${manga.id}`,
             description: fixMojibake(manga.description),
             status: manga.hiatus != "No" ? StatusMap["on_hiatus"] : StatusMap[manga.status],
             genre: manga.genres,
@@ -153,14 +161,14 @@ class DefaultExtension extends MProvider {
     }
     
     async getPopular(page) {
-        let first = await this.client.get(`${this.source.baseUrl}/view-all/most-tracked.data?adult=1&_routes=pages/ViewAllPage`)
+        let first = await this.client.get(`${this.baseUrl}/view-all/most-tracked.data?adult=1&_routes=pages/ViewAllPage`)
         // need to request first page every time because its the only one with the max pages number
         let first_hydro = hydrate(7, JSON.parse(first.body));
         // 7 is {manga_list, pagination}
 
         let manga = first_hydro.manga_list;
         if (page > 1) {
-            let res = await this.client.get(`${this.source.baseUrl}/view-all/most-tracked.data?adult=1&page=${page}&_routes=pages/ViewAllPage`);
+            let res = await this.client.get(`${this.baseUrl}/view-all/most-tracked.data?adult=1&page=${page}&_routes=pages/ViewAllPage`);
             let hydro = hydrate(7, JSON.parse(res.body))
             // 7 is {manga_list, pagination}
             manga = hydro.manga_list;
@@ -174,13 +182,13 @@ class DefaultExtension extends MProvider {
         return true;
     }
     async getLatestUpdates(page) {
-        let first = await this.client.get(`${this.source.baseUrl}/view-all/latest-updates.data?adult=1&_routes=pages/ViewAllPage`);
+        let first = await this.client.get(`${this.baseUrl}/view-all/latest-updates.data?adult=1&_routes=pages/ViewAllPage`);
         // need to request first page every time because its the only one with the max pages number
         let first_hydro = hydrate(7, JSON.parse(first.body));
         // 7 is {manga_list, pagination}
         let manga = first_hydro.manga_list;
         if (page > 1) {
-            let res = await this.client.get(`${this.source.baseUrl}/view-all/latest-updates.data?adult=1&page=${page}&_routes=pages/ViewAllPage`);
+            let res = await this.client.get(`${this.baseUrl}/view-all/latest-updates.data?adult=1&page=${page}&_routes=pages/ViewAllPage`);
             let hydro = hydrate(7, JSON.parse(res.body))
             // 7 is {manga_list, pagination}
             manga = hydro.manga_list;
@@ -193,14 +201,14 @@ class DefaultExtension extends MProvider {
     }
 
     async search(query, page=1, filters) {
-        let url = `${this.source.baseUrl}/search.data`
+        let url = `${this.baseUrl}/search.data`
         let params = {};
     
         if (query) {
             params["search"] = query;
         }
         
-        for (const filter of filters) {
+        for (const filter of (filters || [])) {
             if (filter.type == "GenreFilter") {
                 params["genre"] = [];
                 filter.state.forEach(e => {
@@ -238,7 +246,7 @@ class DefaultExtension extends MProvider {
         params["perPage"] = this.total;
         params["_routes"] = "pages/SearchPage"
         
-        let res = await this.client.get(`${this.source.baseUrl}/search.data?${buildParams(params)}`);
+        let res = await this.client.get(`${this.baseUrl}/search.data?${buildParams(params)}`);
         let hydrated = hydrate(4, JSON.parse(res.body))
         // 4 is {allGenres,displayMode,filters,page,pagination,query,results}
 
@@ -248,14 +256,14 @@ class DefaultExtension extends MProvider {
         }
     }
     async getChapters(id) {
-        let res = await this.client.get(`${this.source.apiUrl}/manga/${id}/chapters/list`);
+        let res = await this.client.get(`${this.apiUrl}/manga/${id}/chapters/list`);
         let data = JSON.parse(res.body);
 
         let chapters = []
         for (const c of data) {
             chapters.push({
                 name: c.chapter_title && c.chapter_title.length ? c.chapter_title : `${c.volume_number ? "Volume "+c.volume_number+" " : ""}Chapter ${c.chapter_number}`,
-                url: `${this.source.baseUrl}/chapter/${c.id}${c.group_name && c.group_name.length ? "?source=user" : ""}`,
+                url: `${this.baseUrl}/chapter/${c.id}${c.group_name && c.group_name.length ? "?source=user" : ""}`,
                 dateUpload: String(new Date(c.date_added.replace(/([+-]\d{2})$/,"$1:00").replace(" ", "T")).getTime()),
                 scanlator: c.group_name && c.group_name.length ? c.group_name : "Official"
             })
@@ -264,8 +272,8 @@ class DefaultExtension extends MProvider {
     }
 
     async getDetail(link) {
-        let id = link.split("/")[4];
-        let res = await this.client.get(`${this.source.baseUrl}/manga/${id}.data?_routes=pages/MangaDetailPage`)
+        let id = link.replace(/\/+$/, "").split("/").pop();
+        let res = await this.client.get(`${this.baseUrl}/manga/${id}.data?_routes=pages/MangaDetailPage`)
         
         return {
             link,
@@ -275,23 +283,24 @@ class DefaultExtension extends MProvider {
     }
     async getPageList(url) {
         let res;
+        const cleanUrl = url.split("?")[0].replace(/\/+$/, "");
+        const id = cleanUrl.split("/").pop();
         if (url.includes("?source=user")) {
-          let id = url.split("?")[0].split("/")[4];
-          res = await this.client.get(`${this.source.apiUrl}/uploads/${id}/images`);   
+          res = await this.client.get(`${this.apiUrl}/uploads/${id}/images`);   
         } else {
-          let id = url.split("/")[4];
-          res = await this.client.get(`${this.source.apiUrl}/chapters/${id}/images`);        
+          res = await this.client.get(`${this.apiUrl}/chapters/${id}/images`);        
         }
         let data = JSON.parse(res.body);
         let images = [];
         for (const image of data.images) {
           images.push({
-            url: this.prefs.get("proxy-use") ? `${this.prefs.get("proxy-url")}/image?url=${this.source.baseUrl}${image.url}` : `${this.source.baseUrl}${image.url}`,
+            url: this.prefs.get("proxy-use") ? `${this.prefs.get("proxy-url")}/image?url=${this.baseUrl}${image.url}` : `${this.baseUrl}${image.url}`,
             headers: res.headers
             });
         }
         return images;
     }
+
     // not needed
     // async getGenres() {
     //     let res = await this.client.get(`${this.source.baseUrl}/collections.data?adult=1&_routes=pages%2FCollectionsPage`);
@@ -559,7 +568,7 @@ class DefaultExtension extends MProvider {
                 "checkBoxPreference": {
                     "title": "cloudflare proxy",
                     "summary": "Use a custom cloudflare proxy",
-                    "value": true
+                    "value": false
                 }
             },{
                 "key": "proxy-url",

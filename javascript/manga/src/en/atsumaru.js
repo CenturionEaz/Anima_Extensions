@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": false,
     "sourceCodeUrl": "",
     "apiUrl": "https://atsu.moe",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,
@@ -40,8 +40,13 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  getImageUrl(path) {
-    if (!path) return "";
+  getImageUrl(input) {
+    if (!input) return "";
+    let path = input;
+    if (typeof input === "object") {
+      path = input.largeImage || input.mediumImage || input.image || input.url || input.smallImage || "";
+    }
+    if (!path || typeof path !== "string") return "";
     if (path.startsWith("http")) return path;
     const clean = path.startsWith("/") ? path : `/${path}`;
     return `https://atsu.moe${clean}`;
@@ -52,7 +57,7 @@ class DefaultExtension extends MProvider {
       try {
         const res = await this.client.get("https://atsu.moe/api/home2/popular", this.headers);
         const data = JSON.parse(res.body);
-        const items = Array.isArray(data) ? data : (data.popular || []);
+        const items = data.items || data.popular || (Array.isArray(data) ? data : []);
         const list = items.map(item => ({
           name: item.title || "",
           link: item.id || "",
@@ -160,6 +165,6 @@ class DefaultExtension extends MProvider {
     const rc = data.readChapter || {};
     const pages = rc.pages || [];
 
-    return pages.map(p => this.getImageUrl(p.image));
+    return pages.map(p => this.getImageUrl(typeof p === "object" ? (p.image || p.url || p) : p));
   }
 }

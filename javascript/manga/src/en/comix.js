@@ -1,19 +1,24 @@
+/**
+ * Comix Extension for AnymeX & Mangayomi
+ * itemType: 0 (Manga)
+ */
+
 const mangayomiSources = [
   {
     "id": 5738565392,
     "name": "Comix",
     "lang": "en",
     "baseUrl": "https://comix.to",
-    "apiUrl": "https://comix.to/api/v2/",
+    "apiUrl": "https://comix.to/api/v1/",
     "iconUrl": "https://comix.to/images/icon_512x512.png",
     "typeSource": "single",
     "itemType": 0,
-    "version": "0.1.0",
+    "version": "0.1.1",
+    "hasCloudflare": true,
+    "notes": "Uses SSR initial-data & WebView reader",
     "pkgPath": "manga/src/en/comix.js"
   }
 ];
-
-const NSFW_GENRE_IDS = ["87264", "87265", "87266", "87268"];
 
 class DefaultExtension extends MProvider {
   constructor() {
@@ -21,518 +26,339 @@ class DefaultExtension extends MProvider {
     this.client = new Client();
   }
 
-  get apiUrl() {
-    return this.source.apiUrl || "https://comix.to/api/v2/";
+  get baseUrl() {
+    return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://comix.to";
   }
 
-  getHeaders(url) {
+  get headers() {
     return {
-      Referer: `${this.source.baseUrl}/`,
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Referer": "https://comix.to/"
     };
   }
 
-  // ── helpers ───────────────────────────────────────────────────────────────
+  extractInitialData(html) {
+    if (!html) return null;
+    const match = html.match(/<script\b[^>]*id="initial-data"[^>]*>([\s\S]*?)<\/script>/i);
+    if (!match || !match[1]) return null;
+    try {
+      return JSON.parse(match[1]);
+    } catch (_) {
+      return null;
+    }
+  }
 
-  buildUrl(path, params = {}) {
-    let url = `${this.apiUrl}${path}`;
-    const pairs = [];
-    for (const [k, v] of Object.entries(params)) {
-      if (Array.isArray(v)) {
-        for (const item of v) {
-          pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(item)}`);
-        }
-      } else if (v !== null && v !== undefined && v !== "") {
-        pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  mangaFromItem(item) {
+    if (!item) return null;
+    const name = item.title || "";
+    const hid = item.hid || item.id || "";
+    let imageUrl = "";
+    if (item.poster) {
+      if (typeof item.poster === "string") {
+        imageUrl = item.poster;
+      } else if (typeof item.poster === "object") {
+        imageUrl = item.poster.large || item.poster.medium || item.poster.small || "";
       }
     }
-    if (pairs.length) url += "?" + pairs.join("&");
-    return url;
+    const link = `${this.baseUrl}/title/${hid}`;
+    return { name, link, imageUrl };
   }
-
-  async fetchJson(url) {
-    const res = await this.client.get(url, this.getHeaders(url));
-    return JSON.parse(res.body);
-  }
-
-  statusCode(status) {
-    return (
-      {
-        releasing: 0,
-        finished: 1,
-        on_hiatus: 2,
-        discontinued: 3,
-      }[status] ?? 5
-    );
-  }
-
-  posterUrl(poster, quality) {
-    if (!poster) return null;
-    return poster[quality] || poster.large || poster.medium || poster.small || null;
-  }
-
-  fancyScore(ratedAvg) {
-    if (!ratedAvg || ratedAvg === 0) return "";
-    const score = Math.round(ratedAvg);
-    const stars = Math.round(ratedAvg / 2);
-    const starStr = "★".repeat(stars) + "☆".repeat(5 - stars);
-    return `${starStr} ${ratedAvg}`;
-  }
-
-  mangaFromItem(item, quality = "large") {
-    return {
-      name: item.title,
-      imageUrl: this.posterUrl(item.poster, quality),
-      link: `/${item.hash_id}`,
-    };
-  }
-
-  // ── Preferences ──────────────────────────────────────────────────────────
-
-  getPreference(key, defaultValue) {
-    const val = new SharedPreferences().get(key);
-    return val !== null && val !== undefined && val !== "" ? val : defaultValue;
-  }
-
-  getSourcePreferences() {
-    return [
-      {
-        key: "nsfw_pref",
-        listPreference: {
-          title: "Hide NSFW content",
-          summary: "Hides NSFW content from popular, latest, and search results",
-          valueIndex: 0,
-          entries: ["Show all", "Hide NSFW"],
-          entryValues: ["show", "hide"],
-        },
-      },
-    ];
-  }
-
-  // ── Popular ───────────────────────────────────────────────────────────────
 
   async getPopular(page) {
-    return this._searchWithSort("order[views_30d]", page);
-  }
+    const res = await this.client.get(`${this.baseUrl}/`, this.headers);
+    const data = this.extractInitialData(res.body || "");
+    const queries = (data && data.queries) || {};
 
-  // ── Latest Updates ────────────────────────────────────────────────────────
+    const list = [];
+    const seen = {};
 
-  async getLatestUpdates(page) {
-    return this._searchWithSort("order[chapter_updated_at]", page);
-  }
-
-  async _searchWithSort(sortParam, page) {
-    const params = {
-      [sortParam]: "desc",
-      limit: 50,
-      page,
-    };
-    if (this.getPreference("nsfw_pref", "show") === "hide") {
-      params["exclude_genres[]"] = NSFW_GENRE_IDS;
-    }
-    const url = this.buildUrl("manga", params);
-    return this._searchFromUrl(url);
-  }
-
-  // ── Search ────────────────────────────────────────────────────────────────
-
-  async search(query, page, filters) {
-    const params = { limit: 50, page };
-
-    // Sort order (default: views_30d desc)
-    let sortParam = "order[views_30d]";
-    let sortValue = "desc";
-
-    // Process filters
-    // Apply NSFW preference
-    if (this.getPreference("nsfw_pref", "show") === "hide") {
-      params["exclude_genres[]"] = NSFW_GENRE_IDS;
-    }
-
-    for (const filter of filters || []) {
-      if (filter.type_name === "SelectFilter" && filter.name === "Sort") {
-        const opt = filter.values[filter.state];
-        if (opt) {
-          sortParam = opt.param;
-          sortValue = opt.value;
+    for (const k of Object.keys(queries)) {
+      if (k.includes('"manga"') && (k.includes('"top"') || k.includes('"trending"') || k.includes('"follows"'))) {
+        const raw = queries[k];
+        const items = Array.isArray(raw) ? raw : (raw.items || []);
+        for (const it of items) {
+          const m = this.mangaFromItem(it);
+          if (m && m.name && !seen[m.link]) {
+            seen[m.link] = true;
+            list.push(m);
+          }
         }
-      } else if (
-        filter.type_name === "GroupFilter" &&
-        filter.name === "Status"
-      ) {
-        const vals = filter.state
-          .filter((f) => f.state)
-          .map((f) => f.value);
-        if (vals.length) params["statuses[]"] = vals;
-      } else if (filter.type_name === "GroupFilter" && filter.name === "Type") {
-        const vals = filter.state
-          .filter((f) => f.state)
-          .map((f) => f.value);
-        if (vals.length) params["types[]"] = vals;
-      } else if (
-        filter.type_name === "GroupFilter" &&
-        filter.name === "Genres"
-      ) {
-        const included = [];
-        const excluded = [];
-        for (const f of filter.state) {
-          if (f.state === 1) included.push(f.value);
-          else if (f.state === 2) excluded.push(f.value);
-        }
-        if (included.length) params["genres[]"] = included;
-        if (excluded.length) params["exclude_genres[]"] = excluded;
-      } else if (
-        filter.type_name === "GroupFilter" &&
-        filter.name === "Demographic"
-      ) {
-        const included = [];
-        const excluded = [];
-        for (const f of filter.state) {
-          if (f.state === 1) included.push(f.value);
-          else if (f.state === 2) excluded.push(f.value);
-        }
-        if (included.length) params["demographics[]"] = included;
-        if (excluded.length) params["exclude_demographics[]"] = excluded;
-      } else if (
-        filter.type_name === "TextFilter" &&
-        filter.name === "Min Chapters"
-      ) {
-        if (filter.state && filter.state !== "") {
-          params["count[from]"] = filter.state;
-        }
-      } else if (
-        filter.type_name === "SelectFilter" &&
-        filter.name === "Year From"
-      ) {
-        const opt = filter.values[filter.state];
-        if (opt && opt.value !== "") params["release_year[from]"] = opt.value;
-      } else if (
-        filter.type_name === "SelectFilter" &&
-        filter.name === "Year To"
-      ) {
-        const opt = filter.values[filter.state];
-        if (opt && opt.value !== "") params["release_year[to]"] = opt.value;
       }
     }
 
-    if (query && query.trim() !== "") {
-      params.keyword = query.trim();
-      // Override sort to relevance when querying
-      sortParam = "order[relevance]";
-      sortValue = "desc";
+    return { list, hasNextPage: false };
+  }
+
+  async getLatestUpdates(page) {
+    const res = await this.client.get(`${this.baseUrl}/`, this.headers);
+    const data = this.extractInitialData(res.body || "");
+    const queries = (data && data.queries) || {};
+
+    const list = [];
+    const seen = {};
+
+    for (const k of Object.keys(queries)) {
+      if (k.includes('"manga"') && k.includes('"list"')) {
+        const raw = queries[k];
+        const items = Array.isArray(raw) ? raw : (raw.items || []);
+        for (const it of items) {
+          const m = this.mangaFromItem(it);
+          if (m && m.name && !seen[m.link]) {
+            seen[m.link] = true;
+            list.push(m);
+          }
+        }
+      }
     }
 
-    params[sortParam] = sortValue;
-
-    const url = this.buildUrl("manga", params);
-    return this._searchFromUrl(url);
+    return { list, hasNextPage: false };
   }
 
-  async _searchFromUrl(url) {
-    const data = await this.fetchJson(url);
-    const items = data?.result?.items || [];
-    const pagination = data?.result?.pagination || {};
-    const list = items.map((item) => this.mangaFromItem(item));
-    const hasNextPage =
-      (pagination.page || 1) < (pagination.last_page || 1);
-    return { list, hasNextPage };
-  }
+  async search(query, page, filters) {
+    const q = (query || "").trim();
+    if (!q) {
+      return await this.getPopular(page);
+    }
 
-  // ── Manga Detail ──────────────────────────────────────────────────────────
+    // 1. Try webview search interaction
+    try {
+      const searchScript = `
+        (async function() {
+          try {
+            const input = document.querySelector('input[placeholder*="Search"]');
+            if (input) {
+              input.value = ${JSON.stringify(q)};
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              for (let i = 0; i < 20; i++) {
+                await new Promise(r => setTimeout(r, 200));
+                const items = document.querySelectorAll('.search-results a, .search__result a, a[href*="/title/"]');
+                if (items.length > 0) {
+                  const list = Array.from(items).map(a => {
+                    const titleEl = a.querySelector('.title, h4, h5, span') || a;
+                    const imgEl = a.querySelector('img');
+                    return {
+                      name: titleEl.textContent.trim(),
+                      link: a.getAttribute('href') || '',
+                      imageUrl: imgEl ? (imgEl.src || imgEl.getAttribute('data-src') || '') : ''
+                    };
+                  }).filter(x => x.name && x.link && x.link.includes('/title/'));
+                  if (list.length > 0) {
+                    window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(list));
+                    return;
+                  }
+                }
+              }
+            }
+            window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
+          } catch(e) {
+            window.flutter_inappwebview.callHandler('setResponse', 'ERROR:' + e.message);
+          }
+        })()
+      `;
+      const resStr = await evaluateJavascriptViaWebview(`${this.baseUrl}/`, {}, [searchScript]);
+      if (resStr && !resStr.startsWith("ERROR:")) {
+        const parsed = JSON.parse(resStr);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const list = parsed.map(item => ({
+            name: item.name,
+            link: item.link.startsWith("http") ? item.link : `${this.baseUrl}${item.link.startsWith("/") ? "" : "/"}${item.link}`,
+            imageUrl: item.imageUrl
+          }));
+          return { list, hasNextPage: false };
+        }
+      }
+    } catch (_) {}
+
+    // 2. Fallback: search across all preloaded items on home page
+    try {
+      const res = await this.client.get(`${this.baseUrl}/`, this.headers);
+      const data = this.extractInitialData(res.body || "");
+      const queries = (data && data.queries) || {};
+      const list = [];
+      const seen = {};
+      const lowerQ = q.toLowerCase();
+
+      for (const k of Object.keys(queries)) {
+        if (k.includes('"manga"')) {
+          const raw = queries[k];
+          const items = Array.isArray(raw) ? raw : (raw.items || []);
+          for (const it of items) {
+            if (it && it.title && it.title.toLowerCase().includes(lowerQ)) {
+              const m = this.mangaFromItem(it);
+              if (m && !seen[m.link]) {
+                seen[m.link] = true;
+                list.push(m);
+              }
+            }
+          }
+        }
+      }
+      if (list.length > 0) {
+        return { list, hasNextPage: false };
+      }
+    } catch (_) {}
+
+    return { list: [], hasNextPage: false };
+  }
 
   async getDetail(url) {
-    // url is like "/<hash_id>" (the path stored in link)
-    const hashId = url.replace(/^\/+/, "").split("/")[0];
-
-    const params = {
-      "includes[]": [
-        "demographic",
-        "genre",
-        "theme",
-        "author",
-        "artist",
-        "publisher",
-      ],
-    };
-    const apiUrl = this.buildUrl(`manga/${hashId}`, params);
-    const data = await this.fetchJson(apiUrl);
-    const manga = data?.result;
-
-    if (!manga) throw new Error("Manga not found");
-
-    // Build description
-    let description = "";
-    const score = this.fancyScore(manga.rated_avg);
-    if (score) description += score + "\n\n";
-    if (manga.synopsis) description += manga.synopsis;
-
-    // Build genres list
-    const genres = [];
-    const mangaType = manga.type;
-    if (mangaType === "manhwa") genres.push("Manhwa");
-    else if (mangaType === "manhua") genres.push("Manhua");
-    else if (mangaType === "manga") genres.push("Manga");
-    else if (mangaType) genres.push("Other");
-
-    for (const arr of [manga.genre, manga.theme, manga.demographic]) {
-      if (arr && arr.length) arr.forEach((t) => genres.push(t.title));
+    let fullUrl = url;
+    if (!fullUrl.startsWith("http")) {
+      fullUrl = `${this.baseUrl}${fullUrl.startsWith("/") ? "" : "/"}${fullUrl}`;
     }
-    if (manga.is_nsfw) genres.push("NSFW");
 
-    const status = this.statusCode(manga.status);
+    const res = await this.client.get(fullUrl, this.headers);
+    const html = res.body || "";
+    const data = this.extractInitialData(html);
+    const queries = (data && data.queries) || {};
 
-    const author = manga.author?.map((a) => a.title).join(", ") || "";
-    const artist = manga.artist?.map((a) => a.title).join(", ") || "";
+    let detail = null;
+    for (const k of Object.keys(queries)) {
+      if (k.includes('"manga"') && k.includes('"detail"')) {
+        detail = queries[k];
+        break;
+      }
+    }
 
-    const imageUrl = this.posterUrl(manga.poster, "large");
+    const doc = new Document(html);
+    const titleEl = doc.selectFirst("h1");
+    const name = (detail && detail.title) || (titleEl ? titleEl.text.trim() : "");
 
-    // Fetch chapters
-    const chapters = await this._fetchAllChapters(hashId);
+    let imageUrl = "";
+    if (detail && detail.poster) {
+      imageUrl = typeof detail.poster === "string" ? detail.poster : (detail.poster.large || detail.poster.medium || detail.poster.small || "");
+    }
+    if (!imageUrl) {
+      const imgEl = doc.selectFirst("img.cover, .poster img, img");
+      imageUrl = imgEl ? (imgEl.attr("src") || imgEl.attr("data-src") || "") : "";
+    }
+
+    const description = (detail && (detail.synopsis || detail.description)) || "";
+    const author = (detail && detail.authors && detail.authors.map(a => a.title).join(", ")) || "";
+    const artist = (detail && detail.artists && detail.artists.map(a => a.title).join(", ")) || "";
+
+    const genres = [];
+    if (detail && detail.genres) {
+      detail.genres.forEach(g => genres.push(g.title));
+    }
+    if (detail && detail.tags) {
+      detail.tags.forEach(t => genres.push(t.title));
+    }
+
+    const status = detail && detail.status === "finished" ? 1 : (detail && detail.status === "releasing" ? 0 : 5);
+
+    // Fetch chapters via WebView or initial data
+    let chapters = [];
+    try {
+      const chapterScript = `
+        (async function() {
+          try {
+            for (let i = 0; i < 25; i++) {
+              const links = document.querySelectorAll('a[href*="-chapter-"], a[href*="/chapter/"], .chapter-list a');
+              if (links.length > 0) {
+                const chs = Array.from(links).map(a => ({
+                  name: a.textContent.trim() || a.getAttribute('title') || 'Chapter',
+                  url: a.href
+                })).filter(c => c.url && (c.url.includes('-chapter-') || c.url.includes('/chapter/')));
+                if (chs.length > 0) {
+                  window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(chs));
+                  return;
+                }
+              }
+              await new Promise(r => setTimeout(r, 200));
+            }
+            window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
+          } catch(e) {
+            window.flutter_inappwebview.callHandler('setResponse', 'ERROR:' + e.message);
+          }
+        })()
+      `;
+      const chRes = await evaluateJavascriptViaWebview(fullUrl, {}, [chapterScript]);
+      if (chRes && !chRes.startsWith("ERROR:")) {
+        const parsed = JSON.parse(chRes);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          chapters = parsed;
+        }
+      }
+    } catch (_) {}
+
+    if (chapters.length === 0 && detail) {
+      if (detail.latestChapterUrl) {
+        chapters.push({
+          name: `Chapter ${detail.latestChapter || "Latest"}`,
+          url: detail.latestChapterUrl.startsWith("http") ? detail.latestChapterUrl : `${this.baseUrl}${detail.latestChapterUrl}`
+        });
+      }
+      if (detail.firstChapterUrl && detail.firstChapterUrl !== detail.latestChapterUrl) {
+        chapters.push({
+          name: "Chapter 1",
+          url: detail.firstChapterUrl.startsWith("http") ? detail.firstChapterUrl : `${this.baseUrl}${detail.firstChapterUrl}`
+        });
+      }
+    }
 
     return {
-      name: manga.title,
-      description,
+      name,
       imageUrl,
+      description,
       author,
       artist,
       genre: genres,
       status,
-      chapters,
+      chapters
     };
   }
 
-  async _fetchAllChapters(hashId) {
-    const seen = new Map(); // chapter number -> raw API item
-    let page = 1;
-    let hasMore = true;
+  async getPageList(url) {
+    let fullUrl = url;
+    if (!fullUrl.startsWith("http")) {
+      fullUrl = `${this.baseUrl}${fullUrl.startsWith("/") ? "" : "/"}${fullUrl}`;
+    }
 
-    while (hasMore) {
-      const url = this.buildUrl(`manga/${hashId}/chapters`, {
-        "order[number]": "desc",
-        limit: 100,
-        page,
-      });
-      const data = await this.fetchJson(url);
-      const items = data?.result?.items || [];
-      const pagination = data?.result?.pagination || {};
-
-      for (const ch of items) {
-        const key = ch.number;
-        const existing = seen.get(key);
-        if (!existing) {
-          seen.set(key, ch);
-        } else {
-          const newIsOfficial = ch.scanlation_group_id === 9275 || ch.is_official === 1;
-          const curIsOfficial = existing.scanlation_group_id === 9275 || existing.is_official === 1;
-          const better =
-            (newIsOfficial && !curIsOfficial) ? true :
-              (!newIsOfficial && curIsOfficial) ? false :
-                ch.votes !== existing.votes ? ch.votes > existing.votes :
-                  ch.updated_at > existing.updated_at;
-          if (better) seen.set(key, ch);
+    try {
+      const readerScript = `
+        (async function() {
+          try {
+            for (let i = 0; i < 30; i++) {
+              const imgs = document.querySelectorAll('.reader-image img, .reader-images img, img.chapter-image, [class*="reader"] img, [class*="chapter"] img, img[src*="static.comix.to"], img[src*="/i/"]');
+              const valid = Array.from(imgs)
+                .map(img => img.src || img.getAttribute('data-src') || '')
+                .filter(src => src && (src.includes('static.comix.to') || src.includes('/i/')) && !src.includes('avatar') && !src.includes('logo') && !src.includes('banner') && !src.includes('poster'));
+              if (valid.length > 0) {
+                window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(valid));
+                return;
+              }
+              await new Promise(r => setTimeout(r, 300));
+            }
+            window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
+          } catch(e) {
+            window.flutter_inappwebview.callHandler('setResponse', 'ERROR:' + e.message);
+          }
+        })()
+      `;
+      const res = await evaluateJavascriptViaWebview(fullUrl, {}, [readerScript]);
+      if (res && !res.startsWith("ERROR:")) {
+        const pages = JSON.parse(res);
+        if (Array.isArray(pages) && pages.length > 0) {
+          return pages;
         }
       }
+    } catch (_) {}
 
-      hasMore =
-        (pagination.current_page || pagination.page || 1) <
-        (pagination.last_page || 1);
-      page++;
-    }
-
-    return Array.from(seen.values()).map((ch) => {
-      let name = `Chapter ${String(ch.number).replace(/\.0$/, "")}`;
-      if (ch.name && ch.name.trim() !== "") name += `: ${ch.name}`;
-
-      let scanlator = "Unknown";
-      if (ch.scanlation_group?.name) {
-        scanlator = ch.scanlation_group.name;
-      } else if (ch.is_official === 1 || ch.is_official === true) {
-        scanlator = "Official";
+    try {
+      const res = await this.client.get(fullUrl, this.headers);
+      const doc = new Document(res.body || "");
+      const imgs = doc.select(".reader-images img, img.chapter-image, img");
+      const pages = [];
+      for (let i = 0; i < imgs.length; i++) {
+        let src = imgs[i].attr("src") || imgs[i].attr("data-src") || "";
+        if (src && (src.includes("static.comix.to") || src.includes("/i/")) && !src.includes("logo") && !src.includes("avatar")) {
+          pages.push(src);
+        }
       }
+      if (pages.length > 0) return pages;
+    } catch (_) {}
 
-      return {
-        name,
-        url: `title/${hashId}/${ch.chapter_id}`,
-        dateUpload: String((ch.updated_at || 0) * 1000),
-        scanlator,
-      };
-    });
-  }
-
-  // ── Page List ─────────────────────────────────────────────────────────────
-
-  async getPageList(url) {
-    // url is "title/<hashId>/<chapterId>"
-    const parts = url.split("/");
-    const chapterId = parts[parts.length - 1];
-
-    const apiUrl = `${this.apiUrl}chapters/${chapterId}`;
-    const data = await this.fetchJson(apiUrl);
-    const result = data?.result;
-
-    if (!result) throw new Error("Chapter not found");
-    if (!result.images || result.images.length === 0) {
-      throw new Error(`No images found for chapter ${chapterId}`);
-    }
-
-    return result.images.map((img) => ({
-      url: img.url,
-      headers: {
-        Referer: `${this.source.baseUrl}/`,
-      },
-    }));
-  }
-
-  // ── Filters ───────────────────────────────────────────────────────────────
-
-  getFilterList() {
-    const currentYear = new Date().getFullYear();
-    const years = [];
-    for (let y = currentYear; y >= 1990; y--) {
-      years.push({ type_name: "SelectOption", name: String(y), value: String(y) });
-    }
-    const yearsWithOlder = [
-      ...years,
-      { type_name: "SelectOption", name: "Older", value: "older" },
-    ];
-
-    return [
-      {
-        type_name: "SelectFilter",
-        name: "Sort",
-        state: 0,
-        values: [
-          { type_name: "SelectOption", name: "Popular (Month)", param: "order[views_30d]", value: "desc" },
-          { type_name: "SelectOption", name: "Popular (Week)", param: "order[views_7d]", value: "desc" },
-          { type_name: "SelectOption", name: "Popular (All Time)", param: "order[views]", value: "desc" },
-          { type_name: "SelectOption", name: "Latest Updated", param: "order[chapter_updated_at]", value: "desc" },
-          { type_name: "SelectOption", name: "Newest", param: "order[created_at]", value: "desc" },
-          { type_name: "SelectOption", name: "Oldest", param: "order[created_at]", value: "asc" },
-          { type_name: "SelectOption", name: "Title A-Z", param: "order[title]", value: "asc" },
-          { type_name: "SelectOption", name: "Title Z-A", param: "order[title]", value: "desc" },
-          { type_name: "SelectOption", name: "Rating", param: "order[rated_avg]", value: "desc" },
-        ],
-      },
-      {
-        type_name: "GroupFilter",
-        name: "Status",
-        state: [
-          { type_name: "CheckBox", name: "Finished", value: "finished" },
-          { type_name: "CheckBox", name: "Releasing", value: "releasing" },
-          { type_name: "CheckBox", name: "On Hiatus", value: "on_hiatus" },
-          { type_name: "CheckBox", name: "Discontinued", value: "discontinued" },
-          { type_name: "CheckBox", name: "Not Yet Released", value: "not_yet_released" },
-        ],
-      },
-      {
-        type_name: "GroupFilter",
-        name: "Genres",
-        state: [
-          { type_name: "TriState", name: "Action", value: "6" },
-          { type_name: "TriState", name: "Adult", value: "87264" },
-          { type_name: "TriState", name: "Adventure", value: "7" },
-          { type_name: "TriState", name: "Boys Love", value: "8" },
-          { type_name: "TriState", name: "Comedy", value: "9" },
-          { type_name: "TriState", name: "Crime", value: "10" },
-          { type_name: "TriState", name: "Drama", value: "11" },
-          { type_name: "TriState", name: "Ecchi", value: "87265" },
-          { type_name: "TriState", name: "Fantasy", value: "12" },
-          { type_name: "TriState", name: "Girls Love", value: "13" },
-          { type_name: "TriState", name: "Hentai", value: "87266" },
-          { type_name: "TriState", name: "Historical", value: "14" },
-          { type_name: "TriState", name: "Horror", value: "15" },
-          { type_name: "TriState", name: "Isekai", value: "16" },
-          { type_name: "TriState", name: "Magical Girls", value: "17" },
-          { type_name: "TriState", name: "Mature", value: "87267" },
-          { type_name: "TriState", name: "Mecha", value: "18" },
-          { type_name: "TriState", name: "Medical", value: "19" },
-          { type_name: "TriState", name: "Mystery", value: "20" },
-          { type_name: "TriState", name: "Philosophical", value: "21" },
-          { type_name: "TriState", name: "Psychological", value: "22" },
-          { type_name: "TriState", name: "Romance", value: "23" },
-          { type_name: "TriState", name: "Sci-Fi", value: "24" },
-          { type_name: "TriState", name: "Slice of Life", value: "25" },
-          { type_name: "TriState", name: "Smut", value: "87268" },
-          { type_name: "TriState", name: "Sports", value: "26" },
-          { type_name: "TriState", name: "Superhero", value: "27" },
-          { type_name: "TriState", name: "Thriller", value: "28" },
-          { type_name: "TriState", name: "Tragedy", value: "29" },
-          { type_name: "TriState", name: "Wuxia", value: "30" },
-          { type_name: "TriState", name: "Aliens", value: "31" },
-          { type_name: "TriState", name: "Animals", value: "32" },
-          { type_name: "TriState", name: "Cooking", value: "33" },
-          { type_name: "TriState", name: "Cross Dressing", value: "34" },
-          { type_name: "TriState", name: "Delinquents", value: "35" },
-          { type_name: "TriState", name: "Demons", value: "36" },
-          { type_name: "TriState", name: "Genderswap", value: "37" },
-          { type_name: "TriState", name: "Ghosts", value: "38" },
-          { type_name: "TriState", name: "Gyaru", value: "39" },
-          { type_name: "TriState", name: "Harem", value: "40" },
-          { type_name: "TriState", name: "Incest", value: "41" },
-          { type_name: "TriState", name: "Loli", value: "42" },
-          { type_name: "TriState", name: "Mafia", value: "43" },
-          { type_name: "TriState", name: "Magic", value: "44" },
-          { type_name: "TriState", name: "Martial Arts", value: "45" },
-          { type_name: "TriState", name: "Military", value: "46" },
-          { type_name: "TriState", name: "Monster Girls", value: "47" },
-          { type_name: "TriState", name: "Monsters", value: "48" },
-          { type_name: "TriState", name: "Music", value: "49" },
-          { type_name: "TriState", name: "Ninja", value: "50" },
-          { type_name: "TriState", name: "Office Workers", value: "51" },
-          { type_name: "TriState", name: "Police", value: "52" },
-          { type_name: "TriState", name: "Post-Apocalyptic", value: "53" },
-          { type_name: "TriState", name: "Reincarnation", value: "54" },
-          { type_name: "TriState", name: "Reverse Harem", value: "55" },
-          { type_name: "TriState", name: "Samurai", value: "56" },
-          { type_name: "TriState", name: "School Life", value: "57" },
-          { type_name: "TriState", name: "Shota", value: "58" },
-          { type_name: "TriState", name: "Supernatural", value: "59" },
-          { type_name: "TriState", name: "Survival", value: "60" },
-          { type_name: "TriState", name: "Time Travel", value: "61" },
-          { type_name: "TriState", name: "Traditional Games", value: "62" },
-          { type_name: "TriState", name: "Vampires", value: "63" },
-          { type_name: "TriState", name: "Video Games", value: "64" },
-          { type_name: "TriState", name: "Villainess", value: "65" },
-          { type_name: "TriState", name: "Virtual Reality", value: "66" },
-          { type_name: "TriState", name: "Zombies", value: "67" },
-        ],
-      },
-      {
-        type_name: "GroupFilter",
-        name: "Type",
-        state: [
-          { type_name: "CheckBox", name: "Manga", value: "manga" },
-          { type_name: "CheckBox", name: "Manhwa", value: "manhwa" },
-          { type_name: "CheckBox", name: "Manhua", value: "manhua" },
-          { type_name: "CheckBox", name: "Other", value: "other" },
-        ],
-      },
-      {
-        type_name: "GroupFilter",
-        name: "Demographic",
-        state: [
-          { type_name: "TriState", name: "Shoujo", value: "1" },
-          { type_name: "TriState", name: "Shounen", value: "2" },
-          { type_name: "TriState", name: "Josei", value: "3" },
-          { type_name: "TriState", name: "Seinen", value: "4" },
-        ],
-      },
-      {
-        type_name: "TextFilter",
-        name: "Min Chapters",
-        state: "",
-      },
-      {
-        type_name: "SelectFilter",
-        name: "Year From",
-        state: yearsWithOlder.length - 1, // default: "Older"
-        values: yearsWithOlder,
-      },
-      {
-        type_name: "SelectFilter",
-        name: "Year To",
-        state: 0,
-        values: years,
-      },
-    ];
+    return [];
   }
 }
