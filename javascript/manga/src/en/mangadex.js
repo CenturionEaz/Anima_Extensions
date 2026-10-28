@@ -8,7 +8,7 @@ const mangayomiSources = [{
     "typeSource": "single",
     "itemType": 0,
     "isManga": true,
-    "version": "0.1.5",
+    "version": "0.1.6",
     "pkgPath": "manga/src/en/mangadex.js"
 }];
 
@@ -38,7 +38,7 @@ class DefaultExtension extends MProvider {
     }
     async getPopular(page) {
         const offset = 20 * (page - 1);
-        const url = `${this.apiUrl}/manga?limit=20&offset=${offset}&availableTranslatedLanguage[]=${this.lang}&includes[]=cover_art&contentRating[]=safe&contentRating[]=suggestive${this.preferenceOriginalLanguages()}&order[followedCount]=desc`;
+        const url = `${this.apiUrl}/manga?limit=20&offset=${offset}&availableTranslatedLanguage[]=${this.lang}&includes[]=cover_art&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic${this.preferenceOriginalLanguages()}&order[followedCount]=desc`;
         const response = await this.client.get(url, this.getHeaders());
         return this.mangaRes(response.body);
     }
@@ -55,13 +55,13 @@ class DefaultExtension extends MProvider {
             )
         );
         const mangaIdss = mangaIds.map(id => `&ids[]=${id}`).join("");
-        const newUrl = `${this.apiUrl}/manga?includes[]=cover_art&limit=${mangaIds.length}&contentRating[]=safe&contentRating[]=suggestive${this.preferenceOriginalLanguages()}${mangaIdss}`;
+        const newUrl = `${this.apiUrl}/manga?includes[]=cover_art&limit=${mangaIds.length}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic${this.preferenceOriginalLanguages()}${mangaIdss}`;
         const newResponse = await this.client.get(newUrl, this.getHeaders());
         return this.mangaRes(newResponse.body);
     }
     async search(query, page, filters) {
         let offset = 20 * (page - 1);
-        let url = `${this.apiUrl}/manga?includes[]=cover_art&offset=${offset}&limit=20&title=${query}`;
+        let url = `${this.apiUrl}/manga?includes[]=cover_art&offset=${offset}&limit=20&title=${query}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic`;
 
         filters.forEach(filter => {
             if (filter.type === "HasAvailableChaptersFilter") {
@@ -143,7 +143,10 @@ class DefaultExtension extends MProvider {
             manga.genre.push(data.attributes.publicationDemographic);
         }
         manga.status = { "ongoing": 0, "completed": 1, "hiatus": 2, "cancelled": 3 }[data.attributes?.status] ?? 5;
-        const chapterData = await this.fetchPaginatedChapters(mangaId, this.lang);
+        let chapterData = await this.fetchPaginatedChapters(mangaId, this.lang);
+        if (!chapterData || chapterData.length === 0) {
+            chapterData = await this.fetchPaginatedChapters(mangaId, null);
+        }
 
         manga.chapters = chapterData;
         return manga;
@@ -154,7 +157,10 @@ class DefaultExtension extends MProvider {
         let hasMoreResults = true;
 
         while (hasMoreResults) {
-            const url = `${this.apiUrl}/manga/${mangaId}/feed?limit=500&offset=${offset}&includes[]=user&includes[]=scanlation_group&order[volume]=desc&order[chapter]=desc&translatedLanguage[]=${lang}&includeFuturePublishAt=0&includeEmptyPages=0&contentRating[]=safe&contentRating[]=suggestive`;
+            let url = `${this.apiUrl}/manga/${mangaId}/feed?limit=500&offset=${offset}&includes[]=user&includes[]=scanlation_group&order[volume]=desc&order[chapter]=desc&includeFuturePublishAt=0&includeEmptyPages=0&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic`;
+            if (lang) {
+                url += `&translatedLanguage[]=${lang}`;
+            }
             const res = await this.client.get(url, this.getHeaders());
             const paginatedData = JSON.parse(res.body);
             const limit = paginatedData?.limit ?? 0;
@@ -162,7 +168,7 @@ class DefaultExtension extends MProvider {
             const newChapters = this.extractChapters(paginatedData);
             chapters.push(...newChapters);
             offset += limit;
-            hasMoreResults = offset < total && limit > 0;
+            hasMoreResults = offset < total && limit > 0 && chapters.length < 1000;
         }
 
         return chapters;
@@ -198,29 +204,30 @@ class DefaultExtension extends MProvider {
             const chapter = attributes?.chapter;
             let title = attributes?.title ?? "";
             if (volume === null && chapter === null && title === "") {
-                title = "Oneshot"
+                title = "Oneshot";
             }
-            const chapName = `${volume ? `Vol.${volume} ` : ""}${chapter ? `Ch.${chapter} ` : ""}${title}`;
+            const chapName = `${volume ? `Vol.${volume} ` : ""}${chapter ? `Ch.${chapter} ` : ""}${title}`.trim() || `Chapter ${chapter || ""}`;
+            const chId = res?.id || "";
             chaptersList.push({
                 name: chapName,
-                url: res?.id ?? "",
+                url: `${this.baseUrl}/chapter/${chId}`,
                 scanlator: scan,
-                dateUpload: new Date(attributes?.publishAt).valueOf().toString(),
+                dateUpload: attributes?.publishAt ? new Date(attributes.publishAt).valueOf().toString() : null,
             });
-
         }
 
         return chaptersList;
     }
     async getPageList(url) {
-        const chapterId = url.replace(/^.*\/([a-f0-9\-]+)$/i, "$1");
+        const match = url.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        const chapterId = match ? match[0] : url.replace(/^.*\/([a-f0-9\-]+)$/i, "$1");
         const pageUrl = `${this.apiUrl}/at-home/server/${chapterId}`;
         const response = await this.client.get(pageUrl, this.getHeaders());
         const bodyJson = JSON.parse(response.body);
-        const host = bodyJson.baseUrl;
-        const chapter = bodyJson.chapter;
-        const hash = chapter.hash;
-        const chapterDatas = chapter.data;
+        const host = bodyJson.baseUrl || "https://uploads.mangadex.org";
+        const chapter = bodyJson.chapter || {};
+        const hash = chapter.hash || "";
+        const chapterDatas = chapter.data || [];
         return chapterDatas.map(file => `${host}/data/${hash}/${file}`);
     }
 

@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": true,
     "sourceCodeUrl": "",
     "apiUrl": "",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,
@@ -181,7 +181,13 @@ class DefaultExtension extends MProvider {
         }
         if (!seen[src]) {
           seen[src] = true;
-          pages.push(src);
+          pages.push({
+            url: src,
+            headers: {
+              "Referer": "https://onisaga.com/",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+          });
         }
       }
     }

@@ -9,9 +9,9 @@ const mangayomiSources = [{
     "isManga": true,
     "isNsfw": true,
     "hasCloudflare": true,
-    "version": "0.0.3",
+    "version": "0.0.4",
     "pkgPath": "manga/src/en/kagane.js",
-    "notes": "Uses kagane.net API"
+    "notes": "Uses kagane.net API with integrity token"
 }];
 
 class ProxyClient {
@@ -25,27 +25,27 @@ class ProxyClient {
 
     req(method, url, headers, body) {
         const useProxy = this.prefs.get("proxy-use");
-        if (useProxy !== true && useProxy !== "true") {
-            return this.client[method.toLowerCase()](
-                url,
-                headers,
-                body
+        if (useProxy === true || useProxy === "true") {
+            const proxyUrl = this.prefs.get("proxy-url") || "http://localhost:8080";
+            return this.client.post(
+                proxyUrl,
+                {
+                    "x-api-key": this.prefs.get("proxy-key") || "",
+                    "x-impersonate": this.prefs.get("proxy-impersonate") || "chrome120"
+                },
+                JSON.stringify({
+                    url,
+                    method,
+                    headers,
+                    body: typeof body === "object" ? JSON.stringify(body) : body
+                })
             );
         }
 
-        const proxyUrl = this.prefs.get("proxy-url") || "http://localhost:8080";
-        return this.client.post(
-            proxyUrl,
-            {
-                "x-api-key": this.prefs.get("proxy-key") || "",
-                "x-impersonate": this.prefs.get("proxy-impersonate") || "chrome120"
-            },
-            JSON.stringify({
-                url,
-                method,
-                headers,
-                body: typeof body === "object" ? JSON.stringify(body) : body
-            })
+        return this.client[method.toLowerCase()](
+            url,
+            headers,
+            body
         );
     }
 
@@ -87,167 +87,76 @@ class DefaultExtension extends MProvider {
         super();
         this.prefs = new SharedPreferences();
         this.client = new ProxyClient(this.prefs);
-        this.total = 100;
+        this.total = 50;
     }
-    async getChallenge(url, bookid) {
-        const emeScript = `
-            (async function() {
-                function hexToBytes(hex) {
-                    const b = new Uint8Array(hex.length / 2);
-                    for (let i = 0; i < hex.length; i += 2)
-                    b[i / 2] = parseInt(hex.substr(i, 2), 16);
-                    return b;
-                }
 
-                function concat(...arrays) {
-                    const total = arrays.reduce((s, a) => s + a.length, 0);
-                    const out = new Uint8Array(total);
-                    let off = 0;
-                    for (const a of arrays) { out.set(a, off); off += a.length; }
-                    return out;
-                }
-
-                function encodeVarint(n) {
-                    const out = [];
-                    while (n > 127) { out.push((n & 0x7F) | 0x80); n >>>= 7; }
-                    out.push(n & 0x7F);
-                    return new Uint8Array(out);
-                }
-
-                function pbBytes(field, data) {
-                    return concat(encodeVarint((field << 3) | 2), encodeVarint(data.length), data);
-                }
-
-                function pbVarint(field, value) {
-                    return concat(encodeVarint((field << 3) | 0), encodeVarint(value));
-                }
-
-                async function getKID(bookId) {
-                    const enc = new TextEncoder().encode(':' + bookId);
-                    const hash = await crypto.subtle.digest('SHA-256', enc);
-                    return new Uint8Array(hash).slice(0, 16);
-                }
-
-                function buildWidevinePSSH(kid) {
-                    const systemId     = hexToBytes('edef8ba979d64acea3c827dcd51d21ed');
-                    const versionFlags = new Uint8Array([0, 0, 0, 0]);
-                    const kidProto     = new Uint8Array([0x12, kid.length, ...kid]);
-                    const dataLen      = new Uint8Array(4);
-                    new DataView(dataLen.buffer).setUint32(0, kidProto.length, false);
-                    const psshBody = concat(versionFlags, systemId, dataLen, kidProto);
-                    const totalLen = new Uint8Array(4);
-                    new DataView(totalLen.buffer).setUint32(0, psshBody.length + 8, false);
-                    return concat(totalLen, new TextEncoder().encode('pssh'), psshBody);
-                }
-
-                async function getChallengeViaEME(bookId) {
-                    const kid  = await getKID(bookId);
-                    const pssh = buildWidevinePSSH(kid);
-
-                    const certRes = await fetch('${this.source.apiUrl.replace("{}", "yuzuki.")}/v2/static/bin.bin');
-                    const cert    = await certRes.arrayBuffer();
-
-                    const access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
-                    initDataTypes: ['cenc'],
-                    audioCapabilities: [],
-                    videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }]
-                    }]);
-
-                    const mediaKeys = await access.createMediaKeys();
-                    await mediaKeys.setServerCertificate(cert);
-
-                    const session = mediaKeys.createSession();
-
-                    const rawChallenge = await new Promise((resolve, reject) => {
-                    session.addEventListener('message', e => resolve(e.message));
-                    session.addEventListener('error',   () => reject(new Error('EME session error')));
-                    session.generateRequest('cenc', pssh.buffer);
-                    });
-
-                    session.close();
-                    return btoa(String.fromCharCode(...new Uint8Array(rawChallenge)));
-                }
-
-                try {
-                    window.flutter_inappwebview.callHandler('setResponse', await getChallengeViaEME('${bookid}'));
-                } catch(e) {
-                    window.flutter_inappwebview.callHandler('setResponse', 'ERROR:' + e.message);
-                }
-            })()
-        `;
-
-        const result = await evaluateJavascriptViaWebview(url, {}, [emeScript]);
-
-        if (!result || result.startsWith('ERROR:')) {
-            throw new Error('EME challenge failed: ' + result);
-        }
-        return result;
-    }
     get baseUrl() {
         return (this.source && this.source.baseUrl) ? this.source.baseUrl : "https://kagane.net";
     }
+
     get apiUrl() {
         return (this.source && this.source.apiUrl) ? this.source.apiUrl : "https://kagane.net/api";
     }
+
     async getIntegrityToken() {
-        const res = await this.client.post(`${this.apiUrl}/integrity`, 
-            { 'Content-Type': 'application/json' },
-            {}
-        );
-        return JSON.parse(res.body).token;
+        try {
+            const res = await this.client.post(
+                `${this.apiUrl}/integrity`, 
+                { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+                {}
+            );
+            const data = JSON.parse(res.body);
+            return data.token || "";
+        } catch (_) {
+            return "";
+        }
     }
-    getMangaData(manga, full=false) {
+
+    getMangaData(manga, chapters = null) {
         let imageUrl = null;
         if (manga?.cover_image_id) {
             imageUrl = `${this.apiUrl}/v2/image/${manga.cover_image_id}`;
         } else if (manga?.series_covers != null && manga?.series_covers[0]?.image_id) {
             imageUrl = `${this.apiUrl}/v2/image/${manga.series_covers[0].image_id}`;
         }
-        if (this.prefs.get("proxy-use") && imageUrl != null) imageUrl = `${this.prefs.get("proxy-url")}/image?url=${imageUrl}`
-      
-        let chapters = [];
-        if (manga?.series_books != null) {
-            for (const chapter of manga.series_books) {
-            chapters.push({
-                name: chapter?.title ?? `${chapter?.volume_no != null ? "Vol: "+chapter.volume_no : ""}Chapter: ${chapter.chapter_no}`,
-                url: `${this.baseUrl}/series/${manga.series_id}/reader/${chapter.book_id}`,
-                dateUpload: String(new Date(chapter.created_at).getTime()),
-                scanlator: chapter?.groups != null && chapter?.groups[0] != null ? chapter.groups[0].title : chapter?.uploader?.username ?? "Unknown" 
-            })
-            }
-        }
       
         return {
-            name: manga.title,
+            name: manga.title || "Unknown",
             imageUrl,
             link: `${this.baseUrl}/series/${manga.series_id}`,
-            description: manga?.description ?? "Unknown",
-            status: StatusMap[manga.upload_status],
-            genre: manga?.genres[0]?.genre_name != null ? manga?.genres?.map((c)=>c?.genre_name) ?? [] : [],
-            author: "Unknown",
-            artist: "Unknown",
-            ...(chapters != null ? {chapters} : {})
-        }
+            description: manga?.description ?? "",
+            status: StatusMap[manga.upload_status] ?? 0,
+            genre: Array.isArray(manga?.genres) ? manga.genres.map(g => g.genre_name || g).filter(Boolean) : [],
+            author: manga?.author?.name || "Unknown",
+            artist: manga?.artist?.name || "Unknown",
+            ...(chapters != null ? { chapters } : {})
+        };
     }
     
     async getPopular(page) {
         return await this.searchApi(null, "avg_views_today,desc", page);
     }
+
     get supportsLatest() {
         return true;
     }
+
     async getLatestUpdates(page) {
         return await this.searchApi(null, "updated_at,desc", page);
     }
-    async searchApi(query=null, sort=null, page=1) {
-      let params = {};
-      
-      if (sort != null) params["sort"] = sort
-      params["size"]=this.total;
-      params["page"]=page-1;
 
-      let res = await this.client.post(`${this.apiUrl}/v2/search/series?${buildParams(params)}`, 
-            { "content-type": "application/json"}, 
+    async searchApi(query=null, sort=null, page=1) {
+        let params = {};
+        if (sort != null) params["sort"] = sort;
+        params["size"] = this.total;
+        params["page"] = page - 1;
+
+        let res = await this.client.post(
+            `${this.apiUrl}/v2/search/series?${buildParams(params)}`, 
+            { 
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }, 
             { 
                 "content_lang": [],
                 "content_rating": [
@@ -256,47 +165,98 @@ class DefaultExtension extends MProvider {
                     "Erotica",
                     "Pornographic"
                 ],
-                ...(query != null ? {title:query}: {})
+                ...(query != null ? { title: query } : {})
             }
         );
         
-        let data = JSON.parse(res.body)
+        let data = JSON.parse(res.body);
         return {
-            list: data?.content?.map((c)=>this.getMangaData(c)) ?? [],
-            hasNextPage: page != (data?.total_pages ?? page)
-        }
+            list: data?.content?.map((c) => this.getMangaData(c)) ?? [],
+            hasNextPage: page < (data?.total_pages ?? page)
+        };
     }
+
     async search(query, page, filters) {
         return await this.searchApi(query, null, page);
     }
+
     async getDetail(url) {
-        let id = url.split("/").slice(-1)[0];
-        let res = await this.client.get(`${this.apiUrl}/v2/series/${id}`);
-        let data = JSON.parse(res.body);
-        return this.getMangaData(data)
+        const id = url.replace(/\/+$/, "").split("/").pop();
+        const infoRes = await this.client.get(
+            `${this.apiUrl}/v2/series/${id}`,
+            { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+        );
+        const seriesData = JSON.parse(infoRes.body);
+
+        // Fetch books / chapters
+        const chapters = [];
+        try {
+            const booksRes = await this.client.get(
+                `${this.apiUrl}/v2/series/${id}/books?limit=100`,
+                { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+            );
+            const booksData = JSON.parse(booksRes.body);
+            const items = booksData.items || [];
+            for (const b of items) {
+                const volStr = b.volume_no != null ? `Vol. ${b.volume_no} ` : "";
+                const chStr = b.chapter_no != null ? `Ch. ${b.chapter_no}` : "";
+                const titleStr = b.title ? ` - ${b.title}` : "";
+                const name = (volStr + chStr + titleStr).trim() || b.title || `Chapter ${b.sort_no || ""}`;
+                const chUrl = `${this.baseUrl}/series/${id}/reader/${b.book_id}`;
+
+                let scan = "Kagane";
+                if (b.groups && b.groups[0] && b.groups[0].title) {
+                    scan = b.groups[0].title;
+                } else if (b.uploader && b.uploader.username) {
+                    scan = b.uploader.username;
+                }
+
+                chapters.push({
+                    name,
+                    url: chUrl,
+                    dateUpload: b.created_at ? String(new Date(b.created_at).getTime()) : null,
+                    scanlator: scan
+                });
+            }
+        } catch (_) {}
+
+        return this.getMangaData(seriesData, chapters);
     }
+
     async getPageList(url) {
-        const [seriesid, _, bookid] = url.split("/").slice(-3);
-        const [challenge, integrityToken] = await Promise.all([
-            this.getChallenge(url, bookid),
-            this.getIntegrityToken()
-        ]);
-        
+        const bookid = url.replace(/\/+$/, "").split("/").pop();
+        const integrityToken = await this.getIntegrityToken();
+
         const res = await this.client.post(
             `${this.apiUrl}/v2/books/${bookid}?is_datasaver=false`,
             {
-                'Content-Type':      'application/json',
-                'x-integrity-token': `${integrityToken}`
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "x-integrity-token": `${integrityToken}`
             },
-            { challenge }
+            {}
         );
+
         const data = JSON.parse(res.body);
-        let pages = [];
-        for (const page of data.pages) {
-            pages.push({
-                url: `${this.apiUrl}/v2/books/file/${bookid}/${page.page_uuid}?token=${data.access_token}&is_datasaver=false`
-            })
+        const cacheUrl = (data.cache_url || "https://kstatic.to").replace(/\/+$/, "");
+        const accessToken = encodeURIComponent(data.access_token || "");
+        const pages = [];
+
+        if (data.manifest && Array.isArray(data.manifest.pages)) {
+            for (const p of data.manifest.pages) {
+                const ext = p.ext || "jpeg";
+                // 'page' route serves standard jpeg; 'page/datasaver' serves webp
+                const imgUrl = `${cacheUrl}/api/v2/books/page/${bookid}/${p.page_id}.${ext}?token=${accessToken}`;
+                pages.push({
+                    url: imgUrl,
+                    headers: {
+                        "Referer": "https://kagane.net/",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                    }
+                });
+            }
         }
+
         return pages;
     }
     getFilterList() {

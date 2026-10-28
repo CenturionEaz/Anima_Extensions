@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": false,
     "sourceCodeUrl": "",
     "apiUrl": "",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
@@ -195,13 +195,14 @@ class DefaultExtension extends MProvider {
       }
     } catch (_) {}
 
-    // Fallback if no direct stream could be parsed
-    results.push({
-      url: embedUrl,
-      originalUrl: embedUrl,
-      quality: label,
-      headers: this.headers
-    });
+    if (embedUrl.includes(".m3u8") || embedUrl.includes(".mp4")) {
+      results.push({
+        url: embedUrl,
+        originalUrl: embedUrl,
+        quality: label,
+        headers: this.headers
+      });
+    }
     return results;
   }
 

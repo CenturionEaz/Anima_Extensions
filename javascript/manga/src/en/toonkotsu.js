@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": true,
     "sourceCodeUrl": "",
     "apiUrl": "",
-    "version": "0.1.1",
+    "version": "0.1.3",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,
@@ -158,6 +158,65 @@ class DefaultExtension extends MProvider {
   }
 
   async getPageList(url) {
+    let fullUrl = url;
+    if (!fullUrl.startsWith("http")) {
+      fullUrl = `https://toonkotsu.com${fullUrl.startsWith("/") ? "" : "/"}${fullUrl}`;
+    }
+
+    // 1. Try webview fetch within Cloudflare session
+    try {
+      const readerScript = `
+        (async function() {
+          try {
+            const m = window.location.pathname.match(/\\/(\\d+)(?:-chapter-[^\\/]*)?$/) || window.location.pathname.match(/\\/(\\d+)/);
+            if (m) {
+              const res = await fetch('/api/manga/chapter/' + m[1]);
+              const data = await res.json();
+              const chPages = (data.chapter && data.chapter.pages) || data.pages || [];
+              if (Array.isArray(chPages) && chPages.length > 0) {
+                const list = chPages.map(p => {
+                  const src = typeof p === 'string' ? p : (p.src || p.url || '');
+                  return src.startsWith('http') ? src : 'https://toonkotsu.com' + (src.startsWith('/') ? '' : '/') + src;
+                });
+                window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(list));
+                return;
+              }
+            }
+          } catch(e) {}
+          try {
+            for (let i = 0; i < 25; i++) {
+              const imgs = document.querySelectorAll('.reader-images img, #reader img, img.ui-page, .reader-page-clip img, .reader-page img, article img');
+              const valid = Array.from(imgs)
+                .map(img => img.src || img.getAttribute('data-src') || '')
+                .filter(src => src && !src.includes('cover') && !src.includes('logo') && !src.includes('avatar'));
+              if (valid.length > 0) {
+                window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(valid));
+                return;
+              }
+              await new Promise(r => setTimeout(r, 200));
+            }
+            window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
+          } catch(e) {
+            window.flutter_inappwebview.callHandler('setResponse', 'ERROR:' + e.message);
+          }
+        })()
+      `;
+      const resStr = await evaluateJavascriptViaWebview(fullUrl, {}, [readerScript]);
+      if (resStr && !resStr.startsWith("ERROR:")) {
+        const pages = JSON.parse(resStr);
+        if (Array.isArray(pages) && pages.length > 0) {
+          return pages.map(u => ({
+            url: u,
+            headers: {
+              "Referer": "https://toonkotsu.com/",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+          }));
+        }
+      }
+    } catch (_) {}
+
+    // 2. Direct API call fallback
     let chapterId = "";
     const m = url.match(/\/(\d+)(?:-chapter-[^\/]*)?$/) || url.match(/\/(\d+)/);
     if (m) chapterId = m[1];
@@ -172,16 +231,23 @@ class DefaultExtension extends MProvider {
           if (chPages.length > 0) {
             return chPages.map(p => {
               const src = typeof p === "string" ? p : (p.src || p.url || "");
-              if (src.startsWith("http")) return src;
-              return `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
+              const full = src.startsWith("http") ? src : `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
+              return {
+                url: full,
+                headers: {
+                  "Referer": "https://toonkotsu.com/",
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+              };
             });
           }
         }
       } catch (_) {}
     }
 
+    // 3. Document fallback
     try {
-      const res = await this.client.get(url, this.headers);
+      const res = await this.client.get(fullUrl, this.headers);
       const doc = new Document(res.body || "");
       const imgs = doc.select(".reader-images img, #reader img, img.ui-page, .reader-page-clip img, .reader-page img, article img");
       const pages = [];
@@ -189,10 +255,14 @@ class DefaultExtension extends MProvider {
       for (let i = 0; i < imgs.length; i++) {
         let src = imgs[i].attr("src") || imgs[i].attr("data-src") || "";
         if (src && !src.includes("cover") && !src.includes("logo") && !src.includes("avatar")) {
-          if (!src.startsWith("http")) {
-            src = `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
-          }
-          pages.push(src);
+          const full = src.startsWith("http") ? src : `https://toonkotsu.com${src.startsWith("/") ? "" : "/"}${src}`;
+          pages.push({
+            url: full,
+            headers: {
+              "Referer": "https://toonkotsu.com/",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+          });
         }
       }
       if (pages.length > 0) return pages;

@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": false,
     "sourceCodeUrl": "",
     "apiUrl": "https://atsu.moe",
-    "version": "0.1.1",
+    "version": "0.1.3",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,
@@ -44,12 +44,14 @@ class DefaultExtension extends MProvider {
     if (!input) return "";
     let path = input;
     if (typeof input === "object") {
-      path = input.largeImage || input.mediumImage || input.image || input.url || input.smallImage || "";
+      path = input.largeImage || input.mediumImage || input.image || input.poster || input.url || input.smallImage || "";
     }
     if (!path || typeof path !== "string") return "";
     if (path.startsWith("http")) return path;
-    const clean = path.startsWith("/") ? path : `/${path}`;
-    return `https://atsu.moe${clean}`;
+    let clean = path;
+    if (clean.startsWith("/static/")) clean = clean.slice(8);
+    else if (clean.startsWith("/")) clean = clean.slice(1);
+    return `https://cdn.atsu.moe/static/${clean}`;
   }
 
   async getPopular(page) {
@@ -137,7 +139,7 @@ class DefaultExtension extends MProvider {
     const rawChapters = page.chapters || [];
     const chapters = rawChapters.map(ch => ({
       name: ch.title ? (ch.title.startsWith("Chapter") ? ch.title : `Ch. ${ch.number || ""} ${ch.title}`.trim()) : `Chapter ${ch.number || ""}`.trim(),
-      url: `${mangaId}___${ch.id}`,
+      url: `https://atsu.moe/read/${mangaId}/${ch.id}`,
       dateUpload: ch.createdAt ? ch.createdAt.toString() : null,
       scanlator: ch.scanlationMangaId || ""
     }));
@@ -154,10 +156,21 @@ class DefaultExtension extends MProvider {
   }
 
   async getPageList(url) {
-    const parts = url.split("___");
-    if (parts.length < 2) return [];
-    const mangaId = parts[0];
-    const chapterId = parts[1];
+    let mangaId = "";
+    let chapterId = "";
+
+    if (url.includes("___")) {
+      const parts = url.split("___");
+      mangaId = parts[0];
+      chapterId = parts[1];
+    } else {
+      const clean = url.replace(/[?#].*$/, "").replace(/\/+$/, "");
+      const parts = clean.split("/");
+      chapterId = parts.pop();
+      mangaId = parts.pop();
+    }
+
+    if (!mangaId || !chapterId) return [];
 
     const apiUrl = `https://atsu.moe/api/read/chapter?mangaId=${mangaId}&chapterId=${chapterId}`;
     const res = await this.client.get(apiUrl, this.headers);
@@ -165,6 +178,15 @@ class DefaultExtension extends MProvider {
     const rc = data.readChapter || {};
     const pages = rc.pages || [];
 
-    return pages.map(p => this.getImageUrl(typeof p === "object" ? (p.image || p.url || p) : p));
+    return pages.map(p => {
+      const imgPath = typeof p === "object" ? (p.image || p.url || "") : p;
+      return {
+        url: this.getImageUrl(imgPath),
+        headers: {
+          "Referer": "https://atsu.moe/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+      };
+    });
   }
 }

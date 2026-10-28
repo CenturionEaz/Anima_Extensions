@@ -13,7 +13,7 @@ const mangayomiSources = [
     "iconUrl": "https://comix.to/images/icon_512x512.png",
     "typeSource": "single",
     "itemType": 0,
-    "version": "0.1.1",
+    "version": "0.1.3",
     "hasCloudflare": true,
     "notes": "Uses SSR initial-data & WebView reader",
     "pkgPath": "manga/src/en/comix.js"
@@ -120,18 +120,38 @@ class DefaultExtension extends MProvider {
       return await this.getPopular(page);
     }
 
-    // 1. Try webview search interaction
+    // 1. Try webview fetch and input interaction
     try {
       const searchScript = `
         (async function() {
+          try {
+            const res = await fetch('/api/v1/manga?keyword=' + encodeURIComponent(${JSON.stringify(q)}) + '&limit=20');
+            const data = await res.json();
+            const items = data.data || data.items || data || [];
+            if (Array.isArray(items) && items.length > 0) {
+              const list = items.map(m => {
+                let poster = m.poster || m.cover || m.image || '';
+                if (poster && !poster.startsWith('http')) {
+                  poster = 'https://static.comix.to' + (poster.startsWith('/') ? '' : '/') + poster;
+                }
+                return {
+                  name: m.title || m.name || '',
+                  link: '/title/' + (m.hid || m.slug || m.id),
+                  imageUrl: poster
+                };
+              });
+              window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(list));
+              return;
+            }
+          } catch(e) {}
           try {
             const input = document.querySelector('input[placeholder*="Search"]');
             if (input) {
               input.value = ${JSON.stringify(q)};
               input.dispatchEvent(new Event('input', { bubbles: true }));
-              for (let i = 0; i < 20; i++) {
+              for (let i = 0; i < 15; i++) {
                 await new Promise(r => setTimeout(r, 200));
-                const items = document.querySelectorAll('.search-results a, .search__result a, a[href*="/title/"]');
+                const items = document.querySelectorAll('.search-results a, a[href*="/title/"]');
                 if (items.length > 0) {
                   const list = Array.from(items).map(a => {
                     const titleEl = a.querySelector('.title, h4, h5, span') || a;
@@ -149,10 +169,8 @@ class DefaultExtension extends MProvider {
                 }
               }
             }
-            window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
-          } catch(e) {
-            window.flutter_inappwebview.callHandler('setResponse', 'ERROR:' + e.message);
-          }
+          } catch (_) {}
+          window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
         })()
       `;
       const resStr = await evaluateJavascriptViaWebview(`${this.baseUrl}/`, {}, [searchScript]);
@@ -169,7 +187,18 @@ class DefaultExtension extends MProvider {
       }
     } catch (_) {}
 
-    // 2. Fallback: search across all preloaded items on home page
+    // 2. Direct API call fallback
+    try {
+      const apiRes = await this.client.get(`${this.baseUrl}/api/v1/manga?keyword=${encodeURIComponent(q)}&limit=20`, this.headers);
+      const data = JSON.parse(apiRes.body || "{}");
+      const items = data.data || data.items || [];
+      if (Array.isArray(items) && items.length > 0) {
+        const list = items.map(it => this.mangaFromItem(it)).filter(Boolean);
+        if (list.length > 0) return { list, hasNextPage: false };
+      }
+    } catch (_) {}
+
+    // 3. Fallback: search across all preloaded items on home page
     try {
       const res = await this.client.get(`${this.baseUrl}/`, this.headers);
       const data = this.extractInitialData(res.body || "");
@@ -253,7 +282,33 @@ class DefaultExtension extends MProvider {
       const chapterScript = `
         (async function() {
           try {
-            for (let i = 0; i < 25; i++) {
+            const m = window.location.pathname.match(/\\/title\\/([^\\/\\?#]+)/);
+            const rawSlug = m ? m[1] : '';
+            const hid = rawSlug.split('-')[0];
+            if (hid) {
+              const res = await fetch('/api/v1/manga/' + hid + '/chapters?page=1&limit=100&order[number]=desc');
+              const data = await res.json();
+              const items = data.data || data.items || data || [];
+              if (Array.isArray(items) && items.length > 0) {
+                const list = items.map(c => {
+                  const volStr = c.volume != null ? 'Vol. ' + c.volume + ' ' : '';
+                  const numStr = c.number != null ? 'Ch. ' + c.number : '';
+                  const titleStr = c.title || c.name ? ' - ' + (c.title || c.name) : '';
+                  const name = (volStr + numStr + titleStr).trim() || 'Chapter ' + (c.number || '');
+                  return {
+                    name,
+                    url: '/title/' + rawSlug + '/' + (c.hid || c.id) + '-chapter-' + (c.number || '0'),
+                    dateUpload: c.created_at ? String(new Date(c.created_at).getTime()) : null,
+                    scanlator: (c.group && c.group.name) || ''
+                  };
+                });
+                window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(list));
+                return;
+              }
+            }
+          } catch(e) {}
+          try {
+            for (let i = 0; i < 20; i++) {
               const links = document.querySelectorAll('a[href*="-chapter-"], a[href*="/chapter/"], .chapter-list a');
               if (links.length > 0) {
                 const chs = Array.from(links).map(a => ({
@@ -277,7 +332,10 @@ class DefaultExtension extends MProvider {
       if (chRes && !chRes.startsWith("ERROR:")) {
         const parsed = JSON.parse(chRes);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          chapters = parsed;
+          chapters = parsed.map(c => ({
+            ...c,
+            url: c.url.startsWith("http") ? c.url : `${this.baseUrl}${c.url.startsWith("/") ? "" : "/"}${c.url}`
+          }));
         }
       }
     } catch (_) {}
@@ -319,16 +377,30 @@ class DefaultExtension extends MProvider {
       const readerScript = `
         (async function() {
           try {
-            for (let i = 0; i < 30; i++) {
+            const m = window.location.pathname.match(/\\/(\\d+)(?:-chapter-[^\\/]*)?$/) || window.location.pathname.match(/\\/(\\d+)/);
+            if (m) {
+              const res = await fetch('/api/v1/chapters/' + m[1]);
+              const data = await res.json();
+              const ch = data.data || data.chapter || data;
+              const pages = ch.pages || ch.images || [];
+              if (Array.isArray(pages) && pages.length > 0) {
+                const list = pages.map(p => typeof p === 'string' ? p : (p.url || p.src || ''));
+                window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(list));
+                return;
+              }
+            }
+          } catch(e) {}
+          try {
+            for (let i = 0; i < 25; i++) {
               const imgs = document.querySelectorAll('.reader-image img, .reader-images img, img.chapter-image, [class*="reader"] img, [class*="chapter"] img, img[src*="static.comix.to"], img[src*="/i/"]');
               const valid = Array.from(imgs)
                 .map(img => img.src || img.getAttribute('data-src') || '')
-                .filter(src => src && (src.includes('static.comix.to') || src.includes('/i/')) && !src.includes('avatar') && !src.includes('logo') && !src.includes('banner') && !src.includes('poster'));
+                .filter(src => src && (src.includes('static.comix.to') || src.includes('/i/') || src.includes('puregoodsmarket')) && !src.includes('avatar') && !src.includes('logo') && !src.includes('banner') && !src.includes('poster'));
               if (valid.length > 0) {
                 window.flutter_inappwebview.callHandler('setResponse', JSON.stringify(valid));
                 return;
               }
-              await new Promise(r => setTimeout(r, 300));
+              await new Promise(r => setTimeout(r, 250));
             }
             window.flutter_inappwebview.callHandler('setResponse', JSON.stringify([]));
           } catch(e) {
@@ -352,7 +424,7 @@ class DefaultExtension extends MProvider {
       const pages = [];
       for (let i = 0; i < imgs.length; i++) {
         let src = imgs[i].attr("src") || imgs[i].attr("data-src") || "";
-        if (src && (src.includes("static.comix.to") || src.includes("/i/")) && !src.includes("logo") && !src.includes("avatar")) {
+        if (src && (src.includes("static.comix.to") || src.includes("/i/") || src.includes("puregoodsmarket")) && !src.includes("logo") && !src.includes("avatar")) {
           pages.push(src);
         }
       }

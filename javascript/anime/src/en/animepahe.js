@@ -17,7 +17,7 @@ const mangayomiSources = [
     "hasCloudflare": true,
     "sourceCodeUrl": "",
     "apiUrl": "https://animepahe.pw/api",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
@@ -241,16 +241,18 @@ class DefaultExtension extends MProvider {
         }
       }
 
-      // Fallback
-      videos.push({
-        url: href,
-        originalUrl: href,
-        quality: quality,
-        headers: {
-          "User-Agent": this.headers["User-Agent"],
-          "Referer": "https://animepahe.pw/"
-        }
-      });
+      // Fallback - only push if it is a genuine direct stream URL
+      if (href.includes(".m3u8") || href.includes(".mp4")) {
+        videos.push({
+          url: href,
+          originalUrl: href,
+          quality: quality,
+          headers: {
+            "User-Agent": this.headers["User-Agent"],
+            "Referer": "https://animepahe.pw/"
+          }
+        });
+      }
     }
 
     return videos;

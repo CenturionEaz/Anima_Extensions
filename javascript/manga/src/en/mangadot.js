@@ -9,7 +9,7 @@ const mangayomiSources = [{
     "isManga": true,
     "isNsfw": true,
     "hasCloudflare": true,
-    "version": "0.0.9",
+    "version": "0.1.0",
     "pkgPath": "manga/src/en/mangadot.js",
     "notes": ""
 }];
@@ -33,27 +33,27 @@ class ProxyClient {
 
     req(method, url, headers, body) {
         const useProxy = this.prefs.get("proxy-use");
-        if (useProxy !== true && useProxy !== "true") {
-            return this.client[method.toLowerCase()](
-                url,
-                headers,
-                body
+        if ((useProxy === true || useProxy === "true") && this.prefs.get("proxy-url")) {
+            const proxyUrl = this.prefs.get("proxy-url") || "http://localhost:8080";
+            return this.client.post(
+                proxyUrl,
+                {
+                    "x-api-key": this.prefs.get("proxy-key") || "",
+                    "x-impersonate": this.prefs.get("proxy-impersonate") || "chrome120"
+                },
+                JSON.stringify({
+                    url,
+                    method,
+                    headers,
+                    body: typeof body === "object" ? JSON.stringify(body) : body
+                })
             );
         }
 
-        const proxyUrl = this.prefs.get("proxy-url") || "http://localhost:8080";
-        return this.client.post(
-            proxyUrl,
-            {
-                "x-api-key": this.prefs.get("proxy-key") || "",
-                "x-impersonate": this.prefs.get("proxy-impersonate") || "chrome120"
-            },
-            JSON.stringify({
-                url,
-                method,
-                headers,
-                body: typeof body === "object" ? JSON.stringify(body) : body
-            })
+        return this.client[method.toLowerCase()](
+            url,
+            headers,
+            body
         );
     }
 
@@ -256,46 +256,98 @@ class DefaultExtension extends MProvider {
         }
     }
     async getChapters(id) {
-        let res = await this.client.get(`${this.apiUrl}/manga/${id}/chapters/list`);
-        let data = JSON.parse(res.body);
+        try {
+            let res = await this.client.get(`${this.apiUrl}/manga/${id}/chapters/list`, {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": `${this.baseUrl}/manga/${id}`
+            });
+            let data = JSON.parse(res.body);
 
-        let chapters = []
-        for (const c of data) {
-            chapters.push({
-                name: c.chapter_title && c.chapter_title.length ? c.chapter_title : `${c.volume_number ? "Volume "+c.volume_number+" " : ""}Chapter ${c.chapter_number}`,
-                url: `${this.baseUrl}/chapter/${c.id}${c.group_name && c.group_name.length ? "?source=user" : ""}`,
-                dateUpload: String(new Date(c.date_added.replace(/([+-]\d{2})$/,"$1:00").replace(" ", "T")).getTime()),
-                scanlator: c.group_name && c.group_name.length ? c.group_name : "Official"
-            })
+            let chapters = [];
+            for (const c of (Array.isArray(data) ? data : [])) {
+                const volStr = c.volume_number != null ? `Volume ${c.volume_number} ` : "";
+                const chName = c.chapter_title && c.chapter_title.length ? c.chapter_title : `${volStr}Chapter ${c.chapter_number != null ? c.chapter_number : ""}`.trim();
+                const isUser = c.source === "user" || (c.group_name && c.group_name.length > 0);
+                chapters.push({
+                    name: chName || `Chapter ${c.id}`,
+                    url: `${this.baseUrl}/chapter/${c.id}${isUser ? "?source=user" : ""}`,
+                    dateUpload: c.date_added ? String(new Date(c.date_added.replace(/([+-]\d{2})$/,"$1:00").replace(" ", "T")).getTime()) : null,
+                    scanlator: c.group_name && c.group_name.length ? c.group_name : (c.scanlator_name || "Official")
+                });
+            }
+            return chapters;
+        } catch (_) {
+            return [];
         }
-        return chapters;
     }
 
     async getDetail(link) {
-        let id = link.replace(/\/+$/, "").split("/").pop();
-        let res = await this.client.get(`${this.baseUrl}/manga/${id}.data?_routes=pages/MangaDetailPage`)
-        
+        let slugOrId = link.replace(/\/+$/, "").split("/").pop();
+        let res = await this.client.get(`${this.baseUrl}/manga/${slugOrId}.data?_routes=pages/MangaDetailPage`, {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://mangadot.net/"
+        });
+        let table = JSON.parse(res.body);
+        let mangaObj = null;
+        for (let r of [6, 4, 8, 2, 10]) {
+            try {
+                let hyd = hydrate(r, table);
+                if (hyd && hyd.manga && hyd.manga.id) {
+                    mangaObj = hyd.manga;
+                    break;
+                } else if (hyd && hyd.id && hyd.title) {
+                    mangaObj = hyd;
+                    break;
+                }
+            } catch (_) {}
+        }
+        if (!mangaObj) {
+            try {
+                mangaObj = hydrate(6, table) || {};
+            } catch (_) {
+                mangaObj = {};
+            }
+        }
+        let numericId = mangaObj.id || slugOrId;
         return {
             link,
-            ...this.mangaData(hydrate(8, JSON.parse(res.body))),
-            chapters: await this.getChapters(id)
+            ...this.mangaData(mangaObj),
+            chapters: await this.getChapters(numericId)
         };
     }
+
     async getPageList(url) {
         let res;
         const cleanUrl = url.split("?")[0].replace(/\/+$/, "");
         const id = cleanUrl.split("/").pop();
-        if (url.includes("?source=user")) {
-          res = await this.client.get(`${this.apiUrl}/uploads/${id}/images`);   
-        } else {
-          res = await this.client.get(`${this.apiUrl}/chapters/${id}/images`);        
+        const headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer": "https://mangadot.net/"
+        };
+        try {
+            if (url.includes("source=user")) {
+                res = await this.client.get(`${this.apiUrl}/uploads/${id}/images`, headers);
+            } else {
+                res = await this.client.get(`${this.apiUrl}/chapters/${id}/images`, headers);
+            }
+        } catch (_) {
+            try {
+                res = await this.client.get(`${this.apiUrl}/uploads/${id}/images`, headers);
+            } catch (e) {
+                res = await this.client.get(`${this.apiUrl}/chapters/${id}/images`, headers);
+            }
         }
         let data = JSON.parse(res.body);
         let images = [];
-        for (const image of data.images) {
-          images.push({
-            url: this.prefs.get("proxy-use") ? `${this.prefs.get("proxy-url")}/image?url=${this.baseUrl}${image.url}` : `${this.baseUrl}${image.url}`,
-            headers: res.headers
+        for (const image of (data.images || [])) {
+            const imgPath = image.url || image.src || "";
+            const fullUrl = imgPath.startsWith("http") ? imgPath : `${this.baseUrl}${imgPath.startsWith("/") ? "" : "/"}${imgPath}`;
+            images.push({
+                url: fullUrl,
+                headers: {
+                    "Referer": "https://mangadot.net/",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                }
             });
         }
         return images;
